@@ -11,6 +11,9 @@ struct ContentView: View {
     @State private var memoryProbeResult = "尚未测试大型模型内存"
     @State private var memoryProbeRunning = false
     @State private var singleGenerationRunning = false
+    @State private var optimizationProbeRunning = false
+    @State private var optimizationProbeResult = "两项新试验请分别冷启动后运行；不自动切换默认配置。"
+    @State private var hiftPairReady = false
     @StateObject private var sentenceStream = SentenceStream()
     @State private var optimizedSentences = true
     @State private var sentenceThreads = 4
@@ -18,7 +21,7 @@ struct ContentView: View {
     @State private var demoRunning = false
     @State private var firstChunkMilliseconds: Int?
     @State private var errorMessage: String?
-    private var generationRunning: Bool { singleGenerationRunning || sentenceStream.isRunning }
+    private var generationRunning: Bool { singleGenerationRunning || sentenceStream.isRunning || optimizationProbeRunning }
 
     var body: some View {
         NavigationStack {
@@ -82,6 +85,27 @@ struct ContentView: View {
                     }
                 }
                 Section("真机探针") {
+                    Button("HiFT High / Low 同输入对照 · 2.96秒") { runOptimizationProbe(resident: false) }
+                        .disabled(!models.ready || generationRunning || probeRunning || memoryProbeRunning || demoRunning)
+                    Button("Flow常驻＋LLM前向 · 内存与复用探针") { runOptimizationProbe(resident: true) }
+                        .disabled(!models.ready || generationRunning || probeRunning || memoryProbeRunning || demoRunning)
+                    Text(optimizationProbeResult).font(.caption).textSelection(.enabled)
+                    Text("HiFT只改变core精度，F0/Flow仍High。共驻试验只有一套384帧Flow，LLM只生成2个token，不运行HiFT或长文；约20ms采样内存，低于保护门槛就停止。每项做完分享日志，再冷启动测下一项。")
+                        .font(.caption).foregroundStyle(.secondary)
+                    if FileManager.default.fileExists(atPath: CosyVoiceGenerate.hiftProbeLogPath()) {
+                        ShareLink("分享HiFT精度对照日志", item: URL(fileURLWithPath: CosyVoiceGenerate.hiftProbeLogPath()))
+                            .disabled(generationRunning)
+                    }
+                    if FileManager.default.fileExists(atPath: CosyVoiceGenerate.residentProbeLogPath()) {
+                        ShareLink("分享Flow/LLM共驻日志", item: URL(fileURLWithPath: CosyVoiceGenerate.residentProbeLogPath()))
+                            .disabled(generationRunning)
+                    }
+                    if hiftPairReady {
+                        Button("试听HiFT High参考") { playProbeWav(low: false) }.disabled(generationRunning)
+                        Button("试听HiFT Low候选") { playProbeWav(low: true) }.disabled(generationRunning)
+                        ShareLink("分享High参考WAV", item: URL(fileURLWithPath: CosyVoiceGenerate.hiftReferenceWavPath()))
+                        ShareLink("分享Low候选WAV", item: URL(fileURLWithPath: CosyVoiceGenerate.hiftCandidateWavPath()))
+                    }
                     Button("探测 Conditioner MNN 会话") { runProbe() }
                         .disabled(!models.ready || probeRunning || memoryProbeRunning || generationRunning)
                     Text(probeResult).font(.caption).textSelection(.enabled)
@@ -181,6 +205,35 @@ struct ContentView: View {
                 }
             }
         }
+    }
+
+    private func runOptimizationProbe(resident: Bool) {
+        let path = models.directory.path
+        wavPlayer?.stop(); player.stop()
+        optimizationProbeRunning = true
+        if !resident { hiftPairReady = false }
+        optimizationProbeResult = resident ? "正在测唯一Flow与LLM共驻；若退出请重开后分享日志…" : "正在准备同一份Mel/F0输入并运行HiFT High/Low…"
+        DispatchQueue.global(qos: .userInitiated).async {
+            let result = resident ? CosyVoiceGenerate.probeResidentFlow(atDirectory: path)
+                : CosyVoiceGenerate.probeHiFTPrecision(atDirectory: path)
+            DispatchQueue.main.async {
+                optimizationProbeRunning = false
+                if !resident { hiftPairReady = result["success"] as? Bool == true }
+                optimizationProbeResult = String(format: "%@；采样峰值%.0f MB，最低可用%.0f MB。",
+                    result["message"] as? String ?? "探针未返回结果", result["peakFootprintMB"] as? Double ?? 0,
+                    result["minAvailableMB"] as? Double ?? 0)
+            }
+        }
+    }
+
+    private func playProbeWav(low: Bool) {
+        do {
+            player.stop()
+            try AVAudioSession.sharedInstance().setCategory(.playback, mode: .default)
+            try AVAudioSession.sharedInstance().setActive(true)
+            wavPlayer = try AVAudioPlayer(contentsOf: URL(fileURLWithPath: low ? CosyVoiceGenerate.hiftCandidateWavPath() : CosyVoiceGenerate.hiftReferenceWavPath()))
+            if wavPlayer?.play() != true { errorMessage = "无法播放对照WAV" }
+        } catch { errorMessage = error.localizedDescription }
     }
 
     private func runGeneration(lowPrecision: Bool = false, useText: Bool = false) {
