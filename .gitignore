@@ -1,5 +1,6 @@
 Vendor/
 build/
+builds/
 Payload/
 *.xcodeproj/
 *.xcworkspace/

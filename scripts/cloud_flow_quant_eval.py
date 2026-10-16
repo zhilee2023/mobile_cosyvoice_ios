@@ -77,8 +77,11 @@ def main() -> int:
             write_wav(OUTPUT / "full74-fp16.wav", base_pcm)
         for label, path in CANDIDATES.items():
             weight = Path(str(path) + ".weight")
-            if not path.is_file() or not weight.is_file():
-                case["variants"][label] = {"status": "missing_candidate"}
+            if not path.is_file() or not weight.is_file() or weight.stat().st_size == 0:
+                case["variants"][label] = {
+                    "status": "invalid_candidate",
+                    "message": "External Flow weights were not exported; do not treat converter success as quantization.",
+                }
                 continue
             try:
                 mel, seconds = flow(MODEL_DIR, mu, runtime_length=frames, model_path=path, memory="low")
@@ -99,7 +102,8 @@ def main() -> int:
         gc.collect()
     (OUTPUT / "comparison.json").write_text(json.dumps(report, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     print(json.dumps(report, ensure_ascii=False, indent=2), flush=True)
-    return 0
+    return 0 if all(v["status"] == "ran" for c in report["cases"].values()
+                    for v in c["variants"].values()) else 2
 
 
 if __name__ == "__main__":

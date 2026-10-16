@@ -54,9 +54,10 @@ def finite(name: str, data: np.ndarray) -> None:
         raise RuntimeError(f"Non-finite {name}")
 
 
-def conditioner(model_dir: Path, prompt: list[int], target: list[int]) -> tuple[np.ndarray, float]:
+def conditioner(model_dir: Path, prompt: list[int], target: list[int],
+                model_path: Path | None = None) -> tuple[np.ndarray, float]:
     sequence = np.asarray([prompt + target], dtype=np.int32)
-    network, session = model_session(model_dir / "flow-conditioner.fp32.mnn")
+    network, session = model_session(model_path or model_dir / "flow-conditioner.fp32.mnn")
     network.resizeTensor(network.getSessionInput(session, "tokens"), tuple(sequence.shape))
     network.resizeSession(session)
     put(network, session, "tokens", sequence, MNN.Halide_Type_Int)
@@ -167,10 +168,11 @@ def istft(spectral: np.ndarray) -> np.ndarray:
     return np.clip(accumulated[FFT_SIZE // 2:FFT_SIZE // 2 + (frames - 1) * FFT_HOP], -0.99, 0.99).astype(np.float32)
 
 
-def hift(model_dir: Path, mel: np.ndarray, core_model_path: Path | None = None) -> tuple[np.ndarray, dict]:
+def hift(model_dir: Path, mel: np.ndarray, core_model_path: Path | None = None,
+         f0_model_path: Path | None = None) -> tuple[np.ndarray, dict]:
     frames = mel.shape[1]
     shaped_mel = mel.reshape(1, 80, frames)
-    f0_network, f0_session = model_session(model_dir / "hift-f0.fp32.mnn")
+    f0_network, f0_session = model_session(f0_model_path or model_dir / "hift-f0.fp32.mnn")
     f0_network.resizeTensor(f0_network.getSessionInput(f0_session, "mel"), tuple(shaped_mel.shape))
     f0_network.resizeSession(f0_session)
     put(f0_network, f0_session, "mel", shaped_mel)

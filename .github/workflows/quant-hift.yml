@@ -8,6 +8,8 @@ on:
       - '.github/workflows/quant-hift.yml'
       - 'scripts/quantize_internal_mnn.py'
       - 'scripts/cloud_hift_quant_eval.py'
+      - 'scripts/cloud_component_quant_eval.py'
+      - 'scripts/audio_sensitivity_metrics.py'
       - 'scripts/pc_flow_hift_probe.py'
       - 'testdata/pc-real-74-speech-tokens.csv'
 
@@ -34,12 +36,23 @@ jobs:
           mkdir -p reports/cloud-hift-quant
           python scripts/quantize_internal_mnn.py models/CosyVoice3/hift-core.fp32.mnn quant/cloud-hift-core-w8.mnn --bits 8 --report reports/cloud-hift-quant/convert-w8.json > reports/cloud-hift-quant/convert-w8.log 2>&1
           python scripts/quantize_internal_mnn.py models/CosyVoice3/hift-core.fp32.mnn quant/cloud-hift-core-w4.mnn --bits 4 --report reports/cloud-hift-quant/convert-w4.json > reports/cloud-hift-quant/convert-w4.log 2>&1
+      - name: Convert Conditioner and F0 separately
+        run: |
+          mkdir -p reports/cloud-component-quant
+          python scripts/quantize_internal_mnn.py models/CosyVoice3/flow-conditioner.fp32.mnn quant/cloud-conditioner-w8.mnn --bits 8 --report reports/cloud-component-quant/conditioner-w8.json > reports/cloud-component-quant/conditioner-w8.log 2>&1
+          python scripts/quantize_internal_mnn.py models/CosyVoice3/flow-conditioner.fp32.mnn quant/cloud-conditioner-w4.mnn --bits 4 --report reports/cloud-component-quant/conditioner-w4.json > reports/cloud-component-quant/conditioner-w4.log 2>&1
+          python scripts/quantize_internal_mnn.py models/CosyVoice3/hift-f0.fp32.mnn quant/cloud-f0-w8.mnn --bits 8 --report reports/cloud-component-quant/f0-w8.json > reports/cloud-component-quant/f0-w8.log 2>&1
+          python scripts/quantize_internal_mnn.py models/CosyVoice3/hift-f0.fp32.mnn quant/cloud-f0-w4.mnn --bits 4 --report reports/cloud-component-quant/f0-w4.json > reports/cloud-component-quant/f0-w4.log 2>&1
       - name: Compare PCM and WAV against FP32
         run: python scripts/cloud_hift_quant_eval.py
+      - name: Compare Conditioner and F0 against FP32
+        run: python scripts/cloud_component_quant_eval.py
       - name: Upload metrics and audio
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: CosyVoice-HiFT-W8-W4-quant-report
-          path: reports/cloud-hift-quant/
+          path: |
+            reports/cloud-hift-quant/
+            reports/cloud-component-quant/
           if-no-files-found: warn

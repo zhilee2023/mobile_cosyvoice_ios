@@ -7,6 +7,7 @@ from pathlib import Path
 
 import numpy as np
 
+from audio_sensitivity_metrics import compare as audio_compare
 from cloud_flow_quant_eval import metrics, write_wav
 from pc_flow_hift_probe import conditioner, csv_tokens, flow, hift
 
@@ -46,7 +47,8 @@ def main() -> int:
                 if pcm.shape != baseline.shape or not np.isfinite(pcm).all():
                     raise RuntimeError("Shape mismatch or non-finite PCM")
                 case["variants"][label] = {"status": "ran", "hift": timing,
-                                            "pcm": metrics(baseline, pcm)}
+                                            "pcm": metrics(baseline, pcm),
+                                            "audio_spectrum": audio_compare(baseline, pcm)["fft_1024"]}
                 write_wav(OUTPUT / f"{name}-{label}.wav", pcm)
             except Exception as error:
                 case["variants"][label] = {"status": "error", "message": str(error)}
