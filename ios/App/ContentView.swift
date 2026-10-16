@@ -46,9 +46,9 @@ struct ContentView: View {
                     Text(probeResult).font(.caption).textSelection(.enabled)
                 }
                 Section("端侧生成试验 · 固定 speech token") {
-                    Text("用 PC 文字模型预生成的 25 个 token，在本机运行 Conditioner → 256 帧 Flow → HiFT，生成约 1 秒 WAV。不会使用上方输入文字；内存不足会停止。")
+                    Text("用 PC 文字模型预生成的 25 个 token，在本机运行 Conditioner → Flow CPU Low 256 帧 → HiFT，生成约 1 秒 WAV。不会使用上方输入文字；内存不足会停止。")
                         .font(.caption).foregroundStyle(.secondary)
-                    Button(generationRunning ? "生成与记录中…" : "生成 1 秒固定样例并记录日志") { runGeneration() }
+                    Button(generationRunning ? "生成与记录中…" : "生成 1 秒固定样例 · Flow CPU Low") { runGeneration() }
                         .disabled(!models.ready || generationRunning || probeRunning || memoryProbeRunning)
                     Text(generationResult).font(.caption).textSelection(.enabled)
                     let generationLog = CosyVoiceGenerate.generationLogPath()
@@ -68,6 +68,8 @@ struct ContentView: View {
                     Button("测 Flow · Metal High · 256 帧（基线）") { runMemoryProbe(mode: 0) }
                         .disabled(!models.ready || probeRunning || memoryProbeRunning || generationRunning)
                     Button("测 Flow · Metal NoTune · 256 帧") { runMemoryProbe(mode: 1) }
+                        .disabled(!models.ready || probeRunning || memoryProbeRunning || generationRunning)
+                    Button("测 Flow · Metal Low NoTune · 256 帧") { runMemoryProbe(mode: 4) }
                         .disabled(!models.ready || probeRunning || memoryProbeRunning || generationRunning)
                     Button("测 Flow · CPU Low · 256 帧") { runMemoryProbe(mode: 2) }
                         .disabled(!models.ready || probeRunning || memoryProbeRunning || generationRunning)
@@ -154,6 +156,7 @@ struct ContentView: View {
             case 1: result = MNNProbe.probeFlowMetalNoTuneMemory(atDirectory: path)
             case 2: result = MNNProbe.probeFlowCPULowMemory(atDirectory: path)
             case 3: result = MNNProbe.probeHiFTCPUMemory(atDirectory: path)
+            case 4: result = MNNProbe.probeFlowMetalLowNoTuneMemory(atDirectory: path)
             default: result = MNNProbe.probeFlowMetalMemory(atDirectory: path)
             }
             DispatchQueue.main.async {

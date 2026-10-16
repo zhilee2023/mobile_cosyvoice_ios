@@ -70,7 +70,7 @@ def conditioner(model_dir: Path, prompt: list[int], target: list[int],
 
 
 def flow(model_dir: Path, mu: np.ndarray, runtime_length: int | None = None,
-         model_path: Path | None = None, memory: str = "normal") -> tuple[np.ndarray, float]:
+         model_path: Path | None = None, memory: str = "normal", precision: str = "normal") -> tuple[np.ndarray, float]:
     sequence_length = mu.shape[1]
     if runtime_length is None:
         buckets = (512, 768, 1024, 1280, 1536, 2048)
@@ -89,7 +89,7 @@ def flow(model_dir: Path, mu: np.ndarray, runtime_length: int | None = None,
     cond = np.zeros_like(x)
     cond[0, :, :PROMPT_FRAMES] = prompt_cond
     network, session = model_session(
-        model_path or model_dir / "flow.cfg-student-2step.batch1.fp16.mnn", "normal", memory)
+        model_path or model_dir / "flow.cfg-student-2step.batch1.fp16.mnn", precision, memory)
     shapes = {"x": x.shape, "mask": mask.shape, "mu": mu_padded.shape, "spks": spks.shape,
               "cond": cond.shape, "t": (1,)}
     for name, shape in shapes.items():

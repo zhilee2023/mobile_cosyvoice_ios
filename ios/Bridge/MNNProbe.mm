@@ -77,15 +77,16 @@ bool setInputShape(MNN::Interpreter *interpreter, MNN::Session *session,
     return true;
 }
 
-enum class ProbeMode { flowMetal, flowMetalNoTune, flowCPU, hiftCPU };
+enum class ProbeMode { flowMetal, flowMetalNoTune, flowMetalLowNoTune, flowCPU, hiftCPU };
 
 NSDictionary<NSString *, id> *probeLargeSession(NSString *directory, ProbeMode mode) {
     @autoreleasepool {
         ProbeStats stats;
         const bool flow = mode != ProbeMode::hiftCPU;
-        const bool metal = mode == ProbeMode::flowMetal || mode == ProbeMode::flowMetalNoTune;
+        const bool metal = mode == ProbeMode::flowMetal || mode == ProbeMode::flowMetalNoTune || mode == ProbeMode::flowMetalLowNoTune;
         NSString *label = mode == ProbeMode::flowMetal ? @"Flow Metal High / 256 帧" :
             mode == ProbeMode::flowMetalNoTune ? @"Flow Metal High NoTune / 256 帧" :
+            mode == ProbeMode::flowMetalLowNoTune ? @"Flow Metal Low NoTune / 256 帧" :
             mode == ProbeMode::flowCPU ? @"Flow CPU Low / 256 帧" : @"HiFT core CPU Low / 160 帧";
         checkpoint(stats, [@"开始：" stringByAppendingString:label], true);
         NSString *file = flow ? @"flow.cfg-student-2step.batch1.fp16.mnn" : @"hift-core.fp32.mnn";
@@ -114,13 +115,14 @@ NSDictionary<NSString *, id> *probeLargeSession(NSString *directory, ProbeMode m
         checkpoint(stats, @"图已读取；开始创建会话");
 
         MNN::BackendConfig backend;
-        backend.precision = metal ? MNN::BackendConfig::Precision_High : MNN::BackendConfig::Precision_Low;
+        backend.precision = metal && mode != ProbeMode::flowMetalLowNoTune
+            ? MNN::BackendConfig::Precision_High : MNN::BackendConfig::Precision_Low;
         backend.memory = MNN::BackendConfig::Memory_Low;
         MNN::ScheduleConfig config;
         config.type = metal ? MNN_FORWARD_METAL : MNN_FORWARD_CPU;
         config.backupType = MNN_FORWARD_CPU;
         config.numThread = metal ? 1 : 4;
-        if (mode == ProbeMode::flowMetalNoTune) config.mode = MNN_GPU_TUNING_NONE;
+        if (mode == ProbeMode::flowMetalNoTune || mode == ProbeMode::flowMetalLowNoTune) config.mode = MNN_GPU_TUNING_NONE;
         config.backendConfig = &backend;
         MNN::Session *session = interpreter->createSession(config);
         if (!session) {
@@ -171,6 +173,10 @@ NSDictionary<NSString *, id> *probeLargeSession(NSString *directory, ProbeMode m
 
 + (NSDictionary<NSString *, id> *)probeFlowCPULowMemoryAtDirectory:(NSString *)directory {
     return probeLargeSession(directory, ProbeMode::flowCPU);
+}
+
++ (NSDictionary<NSString *, id> *)probeFlowMetalLowNoTuneMemoryAtDirectory:(NSString *)directory {
+    return probeLargeSession(directory, ProbeMode::flowMetalLowNoTune);
 }
 
 + (NSDictionary<NSString *, id> *)probeHiFTCPUMemoryAtDirectory:(NSString *)directory {

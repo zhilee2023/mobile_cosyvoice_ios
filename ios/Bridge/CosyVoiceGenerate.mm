@@ -98,13 +98,13 @@ struct Graph {
     Graph(const Graph &) = delete;
     Graph &operator=(const Graph &) = delete;
     Graph() = default;
-    bool open(NSString *path, bool metal, Trace &trace, NSString *name) {
+    bool open(NSString *path, bool metal, Trace &trace, NSString *name, bool lowPrecision = false) {
         auto started = std::chrono::steady_clock::now();
         net.reset(MNN::Interpreter::createFromFile(path.fileSystemRepresentation));
         trace.record([NSString stringWithFormat:@"%@ 图读取 %.3f 秒", name, secondsSince(started)]);
         if (!net) return false;
         MNN::BackendConfig backend;
-        backend.precision = MNN::BackendConfig::Precision_High;
+        backend.precision = lowPrecision ? MNN::BackendConfig::Precision_Low : MNN::BackendConfig::Precision_High;
         backend.memory = MNN::BackendConfig::Memory_Low;
         MNN::ScheduleConfig config;
         config.type = metal ? MNN_FORWARD_METAL : MNN_FORWARD_CPU;
@@ -189,7 +189,7 @@ bool writeWav(const std::vector<float> &samples) {
 + (NSDictionary<NSString *, id> *)runFixedTokenSampleAtDirectory:(NSString *)directory {
     @autoreleasepool {
         Trace trace;
-        trace.record(@"开始：固定 25 个真实 LLM speech token → Conditioner CPU → Flow Metal High 256 → HiFT CPU；不运行手机文字 LLM", true);
+        trace.record(@"开始：固定 25 个真实 LLM speech token → Conditioner CPU High → Flow CPU Low 256 → HiFT CPU High；不运行手机文字 LLM", true);
         if (os_proc_available_memory() < 2800000000ULL) {
             trace.record(@"停止：初始可用内存低于 2800 MB");
             return result(false, @"初始可用内存不足；未加载模型", trace);
@@ -244,7 +244,7 @@ bool writeWav(const std::vector<float> &samples) {
         std::vector<float> mel(80 * kAudioFrames);
         {
             Graph flow;
-            if (!flow.open([directory stringByAppendingPathComponent:@"flow.cfg-student-2step.batch1.fp16.mnn"], true, trace, @"Flow"))
+            if (!flow.open([directory stringByAppendingPathComponent:@"flow.cfg-student-2step.batch1.fp16.mnn"], false, trace, @"Flow CPU Low", true))
                 return result(false, @"Flow 会话失败", trace);
             if (!(flow.shape("x", {1, 80, kFlowFrames}) && flow.shape("mask", {1, 1, kFlowFrames}) &&
                   flow.shape("mu", {1, 80, kFlowFrames}) && flow.shape("spks", {1, 80}) &&
@@ -252,15 +252,16 @@ bool writeWav(const std::vector<float> &samples) {
                 return result(false, @"Flow 输入形状失败", trace);
             auto started = std::chrono::steady_clock::now();
             flow.net->resizeSession(flow.session);
-            trace.record([NSString stringWithFormat:@"Flow 256 resize %.3f 秒；尚未前向", secondsSince(started)]);
+            trace.record([NSString stringWithFormat:@"Flow CPU Low 256 resize %.3f 秒；尚未前向", secondsSince(started)]);
             flow.releaseModel();
-            if (os_proc_available_memory() < 650000000ULL) {
-                trace.record(@"安全停止：Flow resize 后可用内存低于 650 MB；未前向");
+            if (os_proc_available_memory() < 1200000000ULL) {
+                trace.record(@"安全停止：Flow resize 后可用内存低于 1200 MB；未前向");
                 return result(false, @"Flow resize 后内存不足，已安全停止", trace);
             }
             const float midpoint = float(1.0 - std::cos(kPi / 4.0));
             for (int step = 0; step < 2; ++step) {
                 std::vector<float> time = {step == 0 ? 0.0f : midpoint};
+                trace.record([NSString stringWithFormat:@"Flow CPU Low %d/2 开始；重新传入全部六个输入", step + 1]);
                 started = std::chrono::steady_clock::now();
                 if (!(flow.inputFloat("x", x) && flow.inputFloat("mask", mask) &&
                       flow.inputFloat("mu", paddedMu) && flow.inputFloat("spks", spks) &&
@@ -278,8 +279,8 @@ bool writeWav(const std::vector<float> &samples) {
                 if (!finite(x)) return result(false, @"Flow 更新后含非有限值", trace);
                 trace.record([NSString stringWithFormat:@"Flow %d/2 完成 %.3f 秒；latent 峰值 %.5f",
                               step + 1, secondsSince(started), peak(x)]);
-                if (os_proc_available_memory() < 500000000ULL && step == 0) {
-                    trace.record(@"安全停止：Flow 第一步后可用内存低于 500 MB");
+                if (os_proc_available_memory() < 800000000ULL && step == 0) {
+                    trace.record(@"安全停止：Flow 第一步后可用内存低于 800 MB");
                     return result(false, @"Flow 第一步后内存不足", trace);
                 }
             }
@@ -391,7 +392,7 @@ bool writeWav(const std::vector<float> &samples) {
             trace.record([NSString stringWithFormat:@"停止：PCM/WAV 异常；RMS %.6f，峰值 %.5f", rms, peak(pcm)]);
             return result(false, @"PCM 静音、越界或 WAV 写入失败", trace);
         }
-        trace.record([NSString stringWithFormat:@"完成：iPhone 固定 token→1.00 秒 WAV；总耗时 %.3f 秒；RTF %.3f；RMS %.5f；PCM 峰值 %.5f。不是手机文字 LLM，也不是流式。",
+        trace.record([NSString stringWithFormat:@"完成：iPhone 固定 token→Flow CPU Low→1.00 秒 WAV；总耗时 %.3f 秒；RTF %.3f；RMS %.5f；PCM 峰值 %.5f。不是手机文字 LLM，也不是流式。",
                       secondsSince(trace.start), secondsSince(trace.start), rms, peak(pcm)]);
         return result(true, @"固定 speech token→1 秒语音已在 iPhone 完成；不是手机文字 LLM 或流式", trace);
     }

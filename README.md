@@ -10,6 +10,7 @@
 - `试听播放链路` 只播放本地生成的测试音，不是 CosyVoice 推理。
 - `探测 Conditioner` 只验证一个 MNN 小图能在手机上加载、创建 CPU 会话。Flow Metal High（256 帧）与 HiFT core CPU Low（160 帧）的单独会话内存试验只做创建/resize。此前 512 帧 Flow 真机 resize 占 2,957 MB、仅余 264 MB，因此不再提供 512 帧按钮。日志保存在文件共享区 `last-memory-probe.log`。
 - v0.3.0 的“生成 1 秒固定样例”使用 PC 文字模型已生成的 25 个真实 speech token，在 iPhone 上执行 Conditioner CPU → 两步 Flow Metal High（224 有效帧、256 帧图）→ HiFT F0/core CPU → 24 kHz WAV。逐阶段记录耗时和可用内存到 `last-generation.log`，成功后生成 `last-generated.wav`。首份真机日志在 Flow 256 resize 后 footprint=2,757 MB、available=464 MB，低于 650 MB 安全门槛，**尚未执行 Flow 前向或生成音频**；不能为求通过而直接取消门槛。v0.3.1 增加隔离的 Flow Metal High NoTune 与 CPU Low 256 帧会话/resize 探针，逐项运行并分享 `last-memory-probe.log`，再决定生成后端。它们不执行前向。**手机文字 LLM 与真流式均未接通**。
+- v0.3.1 真机：Metal High NoTune resize footprint=2,745 MB、available=476 MB，未改善内存；CPU Low resize footprint=792 MB、available=2,429 MB。v0.3.2 将固定 1 秒生成切换为 **Flow CPU Low**（Conditioner/HiFT 保持 CPU High），resize 后需至少 1,200 MB、第一步后需至少 800 MB 可用内存，逐步检查有限值并记录 `last-generation.log`。同时增加 Metal Low NoTune 256 帧隔离 resize 探针，以区分后端差异与精度差异；生成按钮仍使用 CPU Low。Windows 相同 25 token、256 帧 normal/low 回归均写出有效 1 秒 WAV；Windows CPU 不支持原生 FP16，不能替代 iPhone ARM 低精度正确性验证。
 - Windows 不能编译 iOS App；仓库内的 GitHub Actions 流程用于 macOS 云端 unsigned IPA 构建。新生成实验需要真机日志验收，云端编译成功不等于手机生成成功。
 - Windows CPU 已跑通 LLM→Conditioner→Flow→HiFT：固定中文测试句生成 74 个有效 speech token、正常 EOS，并写出 2.96 秒 WAV；**是否清晰、自然仍需试听确认，且不是流式**。详见 [PC 验证记录](docs/plan.md)。
 - 1.40 GB 发布 ZIP 的整包 SHA-256 已通过；17 个必需文件中 16 个与上游清单匹配，Flow 图存在已记录的清单哈希差异。MNN 3.6.1 Python 包装层生成接口默认只做 prefill；PC 测试脚本显式传入最大 token 数后才获得有效输出。
