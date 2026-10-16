@@ -1,0 +1,68 @@
+name: Build CosyVoice iOS
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: macos-15
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install build tools
+        run: brew install cmake xcodegen
+      - name: Build pinned MNN 3.6.1 for iOS
+        run: |
+          git clone --depth 1 --branch 3.6.1 https://github.com/alibaba/MNN.git MNN
+          git -C MNN submodule update --init --recursive --depth 1
+          cd MNN
+          sh package_scripts/ios/buildiOS.sh \
+            -DMNN_LOW_MEMORY=ON \
+            -DMNN_SUPPORT_TRANSFORMER_FUSE=ON \
+            -DMNN_OPENCL=OFF
+      - name: Stage framework
+        run: |
+          mkdir -p Vendor
+          cp -R MNN/MNN-iOS-CPU-GPU/Static/MNN.framework Vendor/
+          test -f Vendor/MNN.framework/MNN
+      - name: Generate Xcode project
+        run: xcodegen generate
+      - name: Build unsigned app
+        run: |
+          xcodebuild \
+            -project CosyVoiceMobile.xcodeproj \
+            -scheme CosyVoiceMobile \
+            -configuration Release \
+            -sdk iphoneos \
+            -destination 'generic/platform=iOS' \
+            -derivedDataPath "$PWD/build" \
+            CODE_SIGNING_ALLOWED=NO \
+            build
+      - name: Verify bundle settings
+        run: |
+          python3 - <<'PY'
+          import plistlib
+          from pathlib import Path
+          app = Path('build/Build/Products/Release-iphoneos/CosyVoiceMobile.app')
+          with (app / 'Info.plist').open('rb') as source:
+              info = plistlib.load(source)
+          assert info['UIFileSharingEnabled'] is True
+          assert info['LSSupportsOpeningDocumentsInPlace'] is True
+          assert (app / 'model-manifest.json').is_file()
+          print('Unsigned app and file sharing verified')
+          PY
+      - name: Package unsigned IPA
+        run: |
+          mkdir -p Payload
+          cp -R build/Build/Products/Release-iphoneos/CosyVoiceMobile.app Payload/
+          ditto -c -k --sequesterRsrc --keepParent Payload CosyVoiceMobile-unsigned.ipa
+      - uses: actions/upload-artifact@v4
+        with:
+          name: CosyVoiceMobile-unsigned
+          path: CosyVoiceMobile-unsigned.ipa
+          if-no-files-found: error
