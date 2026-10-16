@@ -8,12 +8,15 @@
 #include <chrono>
 #include <cmath>
 #include <complex>
+#include <cstdio>
 #include <cstring>
+#include <fcntl.h>
 #include <iterator>
 #include <memory>
 #include <numeric>
 #include <thread>
 #include <vector>
+#include <unistd.h>
 
 namespace {
 constexpr int kPromptFrames = 174;
@@ -87,6 +90,42 @@ bool readFloats(NSString *directory, NSString *name, size_t count, std::vector<f
 bool finite(const std::vector<float> &values) {
     return !values.empty() && std::all_of(values.begin(), values.end(), [](float v) { return std::isfinite(v); });
 }
+// MNN prints load failures to stdout/stderr rather than returning an error
+// string. Capture to a regular file (no blocking pipe), restoring both streams
+// on every return. Model actions are serialized by the UI.
+struct NativeLogCapture {
+    int savedOut = -1, savedErr = -1;
+    bool active = false;
+    NativeLogCapture() {
+        int target = open(documentPath(@"last-llm-runtime.log").fileSystemRepresentation,
+                          O_CREAT | O_TRUNC | O_WRONLY, 0600);
+        if (target < 0) return;
+        std::fflush(stdout);
+        std::fflush(stderr);
+        savedOut = dup(STDOUT_FILENO);
+        savedErr = dup(STDERR_FILENO);
+        if (savedOut >= 0 && savedErr >= 0) {
+            active = dup2(target, STDOUT_FILENO) >= 0 && dup2(target, STDERR_FILENO) >= 0;
+        }
+        close(target);
+    }
+    void flush() { std::fflush(stdout); std::fflush(stderr); }
+    void recordFailure(Trace &trace) {
+        flush();
+        NSString *log = [NSString stringWithContentsOfFile:documentPath(@"last-llm-runtime.log")
+                                                encoding:NSUTF8StringEncoding error:nil];
+        if (log.length) trace.record([@"MNN 原始输出（末尾）：\n" stringByAppendingString:
+                                      [log substringFromIndex:log.length > 6000 ? log.length - 6000 : 0]]);
+        else trace.record(@"MNN 未写出原始错误信息；请同时分享生成日志与 LLM 原始日志");
+    }
+    ~NativeLogCapture() {
+        flush();
+        if (savedOut >= 0) { dup2(savedOut, STDOUT_FILENO); close(savedOut); }
+        if (savedErr >= 0) { dup2(savedErr, STDERR_FILENO); close(savedErr); }
+    }
+    NativeLogCapture(const NativeLogCapture &) = delete;
+    NativeLogCapture &operator=(const NativeLogCapture &) = delete;
+};
 float peak(const std::vector<float> &values) {
     float value = 0;
     for (float sample : values) value = std::max(value, std::abs(sample));
@@ -96,6 +135,8 @@ float peak(const std::vector<float> &values) {
 bool generateSpeechTokens(NSString *directory, NSString *text, const std::vector<int> &prompt,
                           Trace &trace, std::vector<int> &speech, NSString **failure) {
     @autoreleasepool {
+        NativeLogCapture nativeLog;
+        if (!nativeLog.active) trace.record(@"警告：无法完整捕获 MNN 原始日志，仍将记录阶段与文件检查");
         NSData *source = [NSData dataWithContentsOfFile:[directory stringByAppendingPathComponent:@"config-cpu-cosyvoice-ras.json"]];
         NSDictionary *base = source ? [NSJSONSerialization JSONObjectWithData:source options:0 error:nil] : nil;
         if (![base isKindOfClass:NSDictionary.class]) {
@@ -112,12 +153,33 @@ bool generateSpeechTokens(NSString *directory, NSString *text, const std::vector
         config[@"repetition_penalty"] = @1.15;
         config[@"max_new_tokens"] = @(kMaxSpeechTokens + 1);
         config[@"async"] = @NO;
-        for (NSString *name in @[@"llm_model", @"llm_weight", @"tokenizer_file"]) {
-            if (![base[name] isKindOfClass:NSString.class] || [base[name] length] == 0) {
-                *failure = @"LLM 配置缺少有效模型文件名";
+        // MNN 3.6.1 uses base_dir + filename verbatim; absolute filenames here
+        // would duplicate the directory. Metadata and embedding need the same
+        // explicit resolution as the graph, weight and tokenizer.
+        config[@"base_dir"] = [directory.stringByStandardizingPath stringByAppendingString:@"/"];
+        NSDictionary *defaults = @{@"llm_model": @"llm.mnn", @"llm_weight": @"llm.mnn.weight",
+                                    @"tokenizer_file": @"tokenizer.mtok", @"llm_config": @"llm_config.json",
+                                    @"embedding_file": @"embeddings_bf16.bin"};
+        trace.record([NSString stringWithFormat:@"LLM 模型目录：%@；文件名使用相对路径", config[@"base_dir"]]);
+        for (NSString *name in @[@"llm_config", @"llm_model", @"llm_weight", @"tokenizer_file", @"embedding_file"]) {
+            id value = base[name] ?: defaults[name];
+            if (![value isKindOfClass:NSString.class] || [value length] == 0 ||
+                [value isAbsolutePath] || [[value pathComponents] containsObject:@".."]) {
+                *failure = [NSString stringWithFormat:@"LLM %@ 必须是有效相对文件名", name];
                 return false;
             }
-            config[name] = [directory stringByAppendingPathComponent:base[name]];
+            config[name] = value;
+            NSString *resolved = [config[@"base_dir"] stringByAppendingString:value];
+            NSDictionary *attributes = [NSFileManager.defaultManager attributesOfItemAtPath:resolved error:nil];
+            unsigned long long size = [attributes[NSFileSize] unsignedLongLongValue];
+            BOOL readable = [NSFileManager.defaultManager isReadableFileAtPath:resolved] &&
+                            [attributes[NSFileType] isEqualToString:NSFileTypeRegular] && size > 0;
+            trace.record([NSString stringWithFormat:@"LLM %@ → %@；%llu 字节；%@",
+                          name, value, size, readable ? @"可读" : @"缺失或不可读"]);
+            if (!readable) {
+                *failure = [NSString stringWithFormat:@"LLM 文件缺失、为空或不可读：%@", resolved];
+                return false;
+            }
         }
         NSString *configPath = [directory stringByAppendingPathComponent:@"config-ios-runtime.json"];
         NSData *configData = [NSJSONSerialization dataWithJSONObject:config options:NSJSONWritingPrettyPrinted error:nil];
@@ -129,8 +191,14 @@ bool generateSpeechTokens(NSString *directory, NSString *text, const std::vector
         trace.record(@"LLM CPU Low / Memory Low 开始加载；权重使用发布包原有混合量化");
         auto started = std::chrono::steady_clock::now();
         std::unique_ptr<Llm, decltype(&Llm::destroy)> llm(Llm::createLLM(configPath.UTF8String), &Llm::destroy);
-        if (!llm || !llm->load()) {
-            *failure = @"手机 LLM 加载失败";
+        if (!llm) {
+            nativeLog.recordFailure(trace);
+            *failure = @"手机 LLM 创建失败；请分享生成日志与 LLM 原始日志";
+            return false;
+        }
+        if (!llm->load()) {
+            nativeLog.recordFailure(trace);
+            *failure = @"手机 LLM load() 失败；请分享生成日志与 LLM 原始日志";
             return false;
         }
         trace.record([NSString stringWithFormat:@"LLM 加载完成 %.3f 秒", secondsSince(started)]);
@@ -160,6 +228,7 @@ bool generateSpeechTokens(NSString *directory, NSString *text, const std::vector
                       context ? context->decode_us / 1e6 : 0.0, speech.size(), invalidCount,
                       eos ? @"是" : @"否", context ? int(context->status) : -1]);
         if (speech.empty() || invalidCount || !eos || speech.size() > kMaxSpeechTokens) {
+            nativeLog.recordFailure(trace);
             *failure = !eos || speech.size() > kMaxSpeechTokens
                 ? @"短句超过首版 160 speech token 上限（约 6.4 秒），未截断合成；请缩短文字"
                 : @"LLM 未生成有效的 speech token，未运行 Flow";
@@ -314,6 +383,7 @@ bool writeWav(const std::vector<float> &samples) {
 
 @implementation CosyVoiceGenerate
 + (NSString *)generationLogPath { return documentPath(@"last-generation.log"); }
++ (NSString *)llmRuntimeLogPath { return documentPath(@"last-llm-runtime.log"); }
 + (NSString *)generatedWavPath { return documentPath(@"last-generated.wav"); }
 
 + (NSDictionary<NSString *, id> *)runFixedTokenSampleAtDirectory:(NSString *)directory {

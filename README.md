@@ -1,6 +1,6 @@
 # CosyVoice3 → MNN → iPhone
 
-**iPhone CPU High 已完成固定 speech token→1 秒 WAV：1.970 秒、采样峰值 1,514 MB。** v0.4.0 接入短句文字→手机 MNN LLM→Conditioner→Flow CPU High→HiFT，仍须真机验证；连续分块和真流式尚未接通。ACE-Step 工程 `C:\ace-step-mnn-ios` 保留且不受本项目改动。
+**iPhone CPU High 已完成固定 speech token→1 秒 WAV：1.970 秒、采样峰值 1,514 MB。** v0.4.1 修复短句文字链路的 LLM 重复路径加载错误，增加文件预检与原始日志；完整手机文字生成仍须真机验证。连续分块和真流式尚未接通。ACE-Step 工程 `C:\ace-step-mnn-ios` 保留且不受本项目改动。
 
 独立于 `C:\ace-step-mnn-ios` 的端侧流式语音合成工程。首选模型为公开的 **Fun-CosyVoice3-0.5B-2512**，运行时只使用 **MNN**；不调用云端 TTS，也不把 MLX 当作 iPhone 推理后端。
 
@@ -14,6 +14,7 @@
 - v0.3.2 真机 CPU Low 第一次 Flow 前向后未通过输出检查，footprint=805 MB、available=2,416 MB；旧日志不能区分形状/读取错误与 NaN/Inf，尚不能断定 FP16 溢出。v0.3.3 默认生成切换 **Flow CPU High**，保留 CPU Low 复现按钮，详细记录输出 shape、逻辑类型、字节数、复制状态和首个非有限值，取消对未知后端缓冲的原始 memcpy 兜底；内存门槛不降低。先分享 CPU High 的 `last-generation.log` 与成功 WAV，再决定优化。ACE/Flow 的模型格式差异见 [内存调查](docs/metal-flow-memory-audit.md)。
 - v0.3.3 真机固定 25 token：CPU High Flow 两步输出、HiFT F0/core 输出全部有限；完成 1.00 秒 WAV 总耗时 1.970 秒，采样峰值 1,514 MB、最低可用 1,707 MB，RMS=0.09183、PCM 峰值=0.66577。舍入后的两个统计量与 PC 参考一致，不证明逐采样相同或听感已验收。
 - v0.4.0 新增“用当前文字生成 · CPU”、真实生成 WAV 播放、LLM prefill/decode/内存日志。首版接收 1–40 个 UTF-16 单元，最多 160 个 speech token（约 6.4 秒）；长度越界或未遇到 EOS 会停止，**不截断并冒充完整语音**。Flow 按真实有效长度选择 256/384/512 帧；LLM（发布包混合量化，CPU Low）和 Flow/HiFT（CPU High）串行释放。6.4 秒是软件测试上限，不是已验证的手机时长或模型理论上限。详见 [短句接线与验收](docs/ios-text-v040.md)。
+- v0.4.0 真机 LLM 在约 2 毫秒内加载失败，尚未进入 prefill/decode。原因是桥接层把文件名改成绝对路径，而 MNN 3.6.1 又直接拼接模型目录。v0.4.1 使用明确的 `base_dir` 与相对文件名，逐项预检图、权重、tokenizer、metadata、embedding，并可分享 `last-llm-runtime.log`。PC 回归复现旧路径失败，修复配置成功生成 70 个有效 speech token、正常 EOS；不代表 iPhone 已通过。详见 [修复与验收](docs/ios-llm-path-v041.md)。
 - Windows 不能编译 iOS App；仓库内的 GitHub Actions 流程用于 macOS 云端 unsigned IPA 构建。新生成实验需要真机日志验收，云端编译成功不等于手机生成成功。
 - Windows CPU 已跑通 LLM→Conditioner→Flow→HiFT：固定中文测试句生成 74 个有效 speech token、正常 EOS，并写出 2.96 秒 WAV；**是否清晰、自然仍需试听确认，且不是流式**。详见 [PC 验证记录](docs/plan.md)。
 - 1.40 GB 发布 ZIP 的整包 SHA-256 已通过；17 个必需文件中 16 个与上游清单匹配，Flow 图存在已记录的清单哈希差异。MNN 3.6.1 Python 包装层生成接口默认只做 prefill；PC 测试脚本显式传入最大 token 数后才获得有效输出。

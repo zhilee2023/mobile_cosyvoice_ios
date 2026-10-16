@@ -65,6 +65,11 @@ struct ContentView: View {
                     if FileManager.default.fileExists(atPath: generationLog) {
                         ShareLink("分享生成日志", item: URL(fileURLWithPath: generationLog))
                     }
+                    let llmLog = CosyVoiceGenerate.llmRuntimeLogPath()
+                    if FileManager.default.fileExists(atPath: llmLog) {
+                        ShareLink("分享 LLM 原始日志", item: URL(fileURLWithPath: llmLog))
+                            .disabled(generationRunning)
+                    }
                     let wavPath = CosyVoiceGenerate.generatedWavPath()
                     if FileManager.default.fileExists(atPath: wavPath) {
                         Button("播放最近成功的生成 WAV") { playGeneratedWav() }

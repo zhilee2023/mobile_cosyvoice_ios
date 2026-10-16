@@ -7,6 +7,7 @@ NS_ASSUME_NONNULL_BEGIN
 + (NSDictionary<NSString *, id> *)runFixedTokenSampleAtDirectory:(NSString *)directory lowPrecisionFlow:(BOOL)lowPrecision;
 + (NSDictionary<NSString *, id> *)generateText:(NSString *)text atDirectory:(NSString *)directory;
 + (NSString *)generationLogPath;
++ (NSString *)llmRuntimeLogPath;
 + (NSString *)generatedWavPath;
 @end
 
