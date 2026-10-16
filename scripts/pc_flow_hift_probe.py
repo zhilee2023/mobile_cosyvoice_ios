@@ -31,9 +31,9 @@ def csv_tokens(path: Path) -> list[int]:
         return [int(item) for row in csv.reader(source) for item in row if item.strip()]
 
 
-def model_session(path: Path, precision: str = "high"):
+def model_session(path: Path, precision: str = "high", memory: str = "normal"):
     network = MNN.Interpreter(str(path))
-    session = network.createSession({"backend": "CPU", "precision": precision, "memory": "normal", "numThread": 4})
+    session = network.createSession({"backend": "CPU", "precision": precision, "memory": memory, "numThread": 4})
     return network, session
 
 
@@ -68,11 +68,13 @@ def conditioner(model_dir: Path, prompt: list[int], target: list[int]) -> tuple[
     return mu, duration
 
 
-def flow(model_dir: Path, mu: np.ndarray) -> tuple[np.ndarray, float]:
+def flow(model_dir: Path, mu: np.ndarray, runtime_length: int | None = None,
+         model_path: Path | None = None, memory: str = "normal") -> tuple[np.ndarray, float]:
     sequence_length = mu.shape[1]
-    buckets = (512, 768, 1024, 1280, 1536, 2048)
-    runtime_length = next((bucket for bucket in buckets if bucket >= sequence_length), None)
     if runtime_length is None:
+        buckets = (512, 768, 1024, 1280, 1536, 2048)
+        runtime_length = next((bucket for bucket in buckets if bucket >= sequence_length), None)
+    if runtime_length is None or runtime_length < sequence_length:
         raise RuntimeError(f"Sequence too long for the public Flow buckets: {sequence_length}")
     noise = np.fromfile(model_dir / "rand-noise.bin", dtype="<f4").reshape(80, 15000)
     prompt_cond = np.fromfile(model_dir / "prompt-cond.bin", dtype="<f4").reshape(80, PROMPT_FRAMES)
@@ -85,7 +87,8 @@ def flow(model_dir: Path, mu: np.ndarray) -> tuple[np.ndarray, float]:
     mu_padded[0, :, :sequence_length] = mu
     cond = np.zeros_like(x)
     cond[0, :, :PROMPT_FRAMES] = prompt_cond
-    network, session = model_session(model_dir / "flow.cfg-student-2step.batch1.fp16.mnn", "normal")
+    network, session = model_session(
+        model_path or model_dir / "flow.cfg-student-2step.batch1.fp16.mnn", "normal", memory)
     shapes = {"x": x.shape, "mask": mask.shape, "mu": mu_padded.shape, "spks": spks.shape,
               "cond": cond.shape, "t": (1,)}
     for name, shape in shapes.items():

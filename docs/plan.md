@@ -28,6 +28,15 @@ HiFT 两个图经清单 SHA-256 验证后，使用 87 个合成目标 token 跑�
 
 ## 公开基线与待验证项
 
+## 2026-10-16 iPhone 内存与 Flow 形状结果
+
+- HiFT core CPU Low、160 帧只做会话创建/resize：采样 footprint 30→164 MB，可用内存最低 3,057 MB；未执行前向，不能推断推理峰值。
+- Flow Metal High、512 帧只做会话创建/resize：采样 footprint 130→2,957 MB，可用内存最低 264 MB；会话释放 0.5 秒后仍占 2,203 MB。此形状不进入前向测试，也不作为手机默认桶。
+- PC MNN CPU 用相同 87 个提示 token + 25 个目标 token（224 有效 mel 帧），256 帧与 512 帧填充的目标输出相对 L2 为 3.60e-5、最大绝对差 0.00215。说明 256 帧形状在此样例数值可行；不代表 iPhone Metal 或所有长度均可行。
+- v0.2.1 iPhone 探针改为先测 256 帧 Flow 会话内存；同时另开 Linux 云测 W8/W4 权重量化，对比 FP16 参考。只有云端量化实际缩小文件、数值/音频可接受、手机 Metal 会话+前向内存安全三个门槛都满足，才考虑替换默认权重。
+
+## 公开基线与待验证项
+
 - [官方 CosyVoice](https://github.com/QwenAudio/CosyVoice)：按 25 speech-token 左右的块加 lookahead/cache 进行流式语音合成。
 - [公开 CosyVoice3-MNN Android 工程](https://github.com/Nian27/CosyVoice3-MNN)：提供 MNN 模型包、LLM、Flow、HiFT 的全句合成实现，可参考导出方式和资产清单；现有流程先产生整句 token，不可直接当成真流式 iPhone 实现。
 - 当前公开 Flow MNN 图的输入是 `x / mask / mu / spks / cond / t`，未见官方流式 `flow_cache` 等状态输入。因此不能只把整句图按 25 token 多跑几次就宣称等价于官方流式；需在 PC 上验证缓存/重叠质量，必要时重新导出带状态的图。此项属于根据两份源码作出的工程判断。

@@ -46,7 +46,7 @@ struct ContentView: View {
                 Section("大模型内存试验") {
                     Text("逐项运行，不同时常驻。只创建并调整会话形状，不运行前向；即使通过，也不能证明完整生成不会超内存。")
                         .font(.caption).foregroundStyle(.secondary)
-                    Button("测 Flow · Metal High · 512 帧") { runMemoryProbe(flow: true) }
+                    Button("测 Flow · Metal High · 256 帧") { runMemoryProbe(flow: true) }
                         .disabled(!models.ready || probeRunning || memoryProbeRunning)
                     Button("测 HiFT core · CPU Low · 160 帧") { runMemoryProbe(flow: false) }
                         .disabled(!models.ready || probeRunning || memoryProbeRunning)

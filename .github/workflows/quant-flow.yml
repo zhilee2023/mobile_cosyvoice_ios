@@ -1,0 +1,50 @@
+name: Probe CosyVoice Flow W8 W4
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/quant-flow.yml'
+      - 'scripts/quantize_flow_mnn.py'
+      - 'scripts/cloud_flow_quant_eval.py'
+      - 'scripts/pc_flow_hift_probe.py'
+      - 'testdata/pc-real-74-speech-tokens.csv'
+
+permissions:
+  contents: read
+
+jobs:
+  quant-flow:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install pinned MNN and test dependencies
+        run: python -m pip install 'MNN==3.6.1' 'numpy==1.26.4'
+      - name: Download and verify published model ZIP
+        run: |
+          python scripts/download_model.py
+          python scripts/extract_model.py downloads/cosyvoice3-mnn-mobile-fp16-complete.zip --accept-known-flow-graph-mismatch
+      - name: Convert Flow W8 weight-only candidate
+        continue-on-error: true
+        run: |
+          mkdir -p reports/cloud-flow-quant
+          python scripts/quantize_flow_mnn.py models/CosyVoice3/flow.cfg-student-2step.batch1.fp16.mnn quant/cloud-flow-w8.mnn --bits 8 --report reports/cloud-flow-quant/convert-w8.json > reports/cloud-flow-quant/convert-w8.log 2>&1
+      - name: Convert Flow W4 HQQ candidate
+        continue-on-error: true
+        run: |
+          mkdir -p reports/cloud-flow-quant
+          python scripts/quantize_flow_mnn.py models/CosyVoice3/flow.cfg-student-2step.batch1.fp16.mnn quant/cloud-flow-w4.mnn --bits 4 --report reports/cloud-flow-quant/convert-w4.json > reports/cloud-flow-quant/convert-w4.log 2>&1
+      - name: Compare candidate Mel and WAV against FP16
+        run: python scripts/cloud_flow_quant_eval.py
+      - name: Upload compact quantization report and audio
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: CosyVoice-Flow-W8-W4-quant-report
+          path: reports/cloud-flow-quant/
+          if-no-files-found: warn

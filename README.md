@@ -8,7 +8,7 @@
 
 - 已搭建 iOS 17+ SwiftUI 应用、MNN C++ 桥、模型文件检查、24 kHz 单声道分块播放与首包/RTF 指标框架。
 - `试听播放链路` 只播放本地生成的测试音，不是 CosyVoice 推理。
-- `探测 Conditioner` 只验证一个 MNN 小图能在手机上加载、创建 CPU 会话。v0.2.0 新增 Flow Metal High（512 帧）与 HiFT core CPU Low（160 帧）的**单独会话创建/resize 内存试验**；不执行前向，采样峰值是下界。试验前后记录 `phys_footprint`、`os_proc_available_memory()` 到 App 文件共享区的 `last-memory-probe.log`，若中途被系统终止，可重开 App 分享最后检查点。**完整的 LLM → Flow → HiFT 流式推理尚未接入**；界面会明确标记“未接通”，不会把预生成音频冒充端侧推理。
+- `探测 Conditioner` 只验证一个 MNN 小图能在手机上加载、创建 CPU 会话。v0.2.1 改为 Flow Metal High（256 帧）与 HiFT core CPU Low（160 帧）的**单独会话创建/resize 内存试验**；不执行前向，采样峰值是下界。此前 512 帧 Flow 真机 resize 占 2,957 MB、仅余 264 MB，因此不再提供 512 帧按钮。试验前后记录 `phys_footprint`、`os_proc_available_memory()` 到 App 文件共享区的 `last-memory-probe.log`，若中途被系统终止，可重开 App 分享最后检查点。**完整的 LLM → Flow → HiFT 流式推理尚未接入**；界面会明确标记“未接通”，不会把预生成音频冒充端侧推理。
 - Windows 不能编译 iOS App；仓库内的 GitHub Actions 流程用于 macOS 云端 unsigned IPA 构建。尚无真机运行结论。
 - Windows CPU 已跑通 LLM→Conditioner→Flow→HiFT：固定中文测试句生成 74 个有效 speech token、正常 EOS，并写出 2.96 秒 WAV；**是否清晰、自然仍需试听确认，且不是流式**。详见 [PC 验证记录](docs/plan.md)。
 - 1.40 GB 发布 ZIP 的整包 SHA-256 已通过；17 个必需文件中 16 个与上游清单匹配，Flow 图存在已记录的清单哈希差异。MNN 3.6.1 Python 包装层生成接口默认只做 prefill；PC 测试脚本显式传入最大 token 数后才获得有效输出。
@@ -34,6 +34,8 @@ C:\ace-step-mnn-ios\.venv\Scripts\python.exe scripts/pc_flow_hift_probe.py model
 `audit_zip.py` 会因那一个 Flow 图哈希差异返回非零码；只有整包发布 SHA-256 已通过、审计报告确认仅该差异时，才使用显式例外标志。将来部署到 iPhone 时，可把提取的 `models/CosyVoice3/` 文件通过 Apple Devices 文件共享导入 App。这个 Android 包以 MNN 3.6.1 制作，只是 iOS 兼容性候选，尚未证明其中每个图都能在 iPhone/Metal 上运行，更未证明它们能分块流式运行。不要直接按 Android 的 0.79–0.96 RTF 估算 iPhone 速度。
 
 真机内存试验需导入全部 **17 个**必需文件，包括 `llm_config.json`。先单独运行 HiFT，再单独运行 Flow；两项都只测会话创建及固定形状 resize，可能仍因内存压力退出。结束后分享 `last-memory-probe.log`；如 App 退出，重开后分享该文件。不能用这两个数值推断 LLM 与两模块同时常驻或实际前向峰值安全，更不能据此宣称流式已接通。
+
+v0.2.1 另有手动/推送触发的 Linux 云测 `Probe CosyVoice Flow W8 W4`：在公开 FP16 MNN 图上分别尝试 W8 block-128 与 W4 HQQ block-128，核查**外部权重实际是否变小**，再用同一批 74 个真实 speech token 测 256/512 帧 Mel、HiFT PCM 差异并导出对照 WAV。它不把云端 CPU 结果当作 iPhone Metal 内存结论；如果 FP16 源图不支持直接再量化，会记录转换无效，后续需从原始 FP32/ONNX 重新导出。量化模型不打包入 App，也不自动替换已验证的 FP16 模型。
 
 ## 构建
 

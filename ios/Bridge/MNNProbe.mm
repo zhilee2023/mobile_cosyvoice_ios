@@ -80,7 +80,7 @@ bool setInputShape(MNN::Interpreter *interpreter, MNN::Session *session,
 NSDictionary<NSString *, id> *probeLargeSession(NSString *directory, bool flow) {
     @autoreleasepool {
         ProbeStats stats;
-        NSString *label = flow ? @"Flow Metal High / 512 帧" : @"HiFT core CPU Low / 160 帧";
+        NSString *label = flow ? @"Flow Metal High / 256 帧" : @"HiFT core CPU Low / 160 帧";
         checkpoint(stats, [@"开始：" stringByAppendingString:label], true);
         NSString *file = flow ? @"flow.cfg-student-2step.batch1.fp16.mnn" : @"hift-core.fp32.mnn";
         NSString *path = [directory stringByAppendingPathComponent:file];
@@ -122,17 +122,17 @@ NSDictionary<NSString *, id> *probeLargeSession(NSString *directory, bool flow) 
         checkpoint(stats, @"会话已创建；开始设置真实测试形状");
 
         bool shapesOK = flow
-            ? setInputShape(interpreter.get(), session, "x", {1, 80, 512})
-              && setInputShape(interpreter.get(), session, "mask", {1, 1, 512})
-              && setInputShape(interpreter.get(), session, "mu", {1, 80, 512})
+            ? setInputShape(interpreter.get(), session, "x", {1, 80, 256})
+              && setInputShape(interpreter.get(), session, "mask", {1, 1, 256})
+              && setInputShape(interpreter.get(), session, "mu", {1, 80, 256})
               && setInputShape(interpreter.get(), session, "spks", {1, 80})
-              && setInputShape(interpreter.get(), session, "cond", {1, 80, 512})
+              && setInputShape(interpreter.get(), session, "cond", {1, 80, 256})
               && setInputShape(interpreter.get(), session, "t", {1})
             : setInputShape(interpreter.get(), session, "mel", {1, 80, 160})
               && setInputShape(interpreter.get(), session, "source_stft", {1, 18, 19201});
         if (shapesOK) {
             interpreter->resizeSession(session);
-            checkpoint(stats, flow ? @"Flow 512 帧 resize 完成" : @"HiFT 160 帧 resize 完成");
+            checkpoint(stats, flow ? @"Flow 256 帧 resize 完成" : @"HiFT 160 帧 resize 完成");
         } else {
             checkpoint(stats, @"输入名称不匹配，跳过 resize");
         }
