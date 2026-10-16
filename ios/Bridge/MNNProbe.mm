@@ -3,8 +3,12 @@
 #import <mach/mach.h>
 #import <os/proc.h>
 
+#include <algorithm>
 #include <chrono>
+#include <limits>
 #include <memory>
+#include <thread>
+#include <vector>
 
 namespace {
 double elapsedSeconds(std::chrono::steady_clock::time_point start) {
@@ -18,9 +22,144 @@ uint64_t footprintBytes() {
                   reinterpret_cast<task_info_t>(&info), &count) != KERN_SUCCESS) return 0;
     return info.phys_footprint;
 }
+
+NSString *probeLogPath() {
+    NSArray<NSURL *> *locations = [[NSFileManager defaultManager] URLsForDirectory:NSDocumentDirectory
+                                                                         inDomains:NSUserDomainMask];
+    return [locations.firstObject URLByAppendingPathComponent:@"last-memory-probe.log"].path;
+}
+
+void writeProbeLine(NSString *line, bool fresh) {
+    NSString *path = probeLogPath();
+    NSString *entry = [line stringByAppendingString:@"\n"];
+    if (fresh) {
+        [entry writeToFile:path atomically:YES encoding:NSUTF8StringEncoding error:nil];
+        return;
+    }
+    NSFileHandle *handle = [NSFileHandle fileHandleForWritingAtPath:path];
+    if (!handle) return;
+    @try {
+        [handle seekToEndOfFile];
+        [handle writeData:[entry dataUsingEncoding:NSUTF8StringEncoding]];
+        [handle synchronizeFile];
+    } @finally {
+        [handle closeFile];
+    }
+}
+
+struct ProbeStats {
+    std::chrono::steady_clock::time_point started = std::chrono::steady_clock::now();
+    double peakFootprintMB = 0;
+    double minAvailableMB = std::numeric_limits<double>::infinity();
+};
+
+void checkpoint(ProbeStats &stats, NSString *stage, bool fresh = false) {
+    double footprint = footprintBytes() / 1000000.0;
+    double available = os_proc_available_memory() / 1000000.0;
+    stats.peakFootprintMB = std::max(stats.peakFootprintMB, footprint);
+    stats.minAvailableMB = std::min(stats.minAvailableMB, available);
+    writeProbeLine([NSString stringWithFormat:@"%.3f\t%@\tfootprint=%.0f MB\tavailable=%.0f MB",
+                    elapsedSeconds(stats.started), stage, footprint, available], fresh);
+}
+
+NSDictionary<NSString *, id> *probeResult(bool success, NSString *message, const ProbeStats &stats) {
+    return @{ @"success": @(success), @"message": message,
+              @"peakFootprintMB": @(stats.peakFootprintMB),
+              @"minAvailableMB": @(stats.minAvailableMB),
+              @"logPath": probeLogPath() };
+}
+
+bool setInputShape(MNN::Interpreter *interpreter, MNN::Session *session,
+                   const char *name, const std::vector<int> &shape) {
+    MNN::Tensor *input = interpreter->getSessionInput(session, name);
+    if (!input) return false;
+    interpreter->resizeTensor(input, shape);
+    return true;
+}
+
+NSDictionary<NSString *, id> *probeLargeSession(NSString *directory, bool flow) {
+    @autoreleasepool {
+        ProbeStats stats;
+        NSString *label = flow ? @"Flow Metal High / 512 帧" : @"HiFT core CPU Low / 160 帧";
+        checkpoint(stats, [@"开始：" stringByAppendingString:label], true);
+        NSString *file = flow ? @"flow.cfg-student-2step.batch1.fp16.mnn" : @"hift-core.fp32.mnn";
+        NSString *path = [directory stringByAppendingPathComponent:file];
+        if (![[NSFileManager defaultManager] fileExistsAtPath:path]) {
+            checkpoint(stats, @"停止：缺少模型图");
+            return probeResult(false, [@"缺少 " stringByAppendingString:file], stats);
+        }
+        if (flow && ![[NSFileManager defaultManager] fileExistsAtPath:[path stringByAppendingString:@".weight"]]) {
+            checkpoint(stats, @"停止：缺少 Flow 外部权重");
+            return probeResult(false, @"缺少 Flow .mnn.weight", stats);
+        }
+        uint64_t available = os_proc_available_memory();
+        uint64_t minimum = flow ? 2000000000ULL : 1000000000ULL;
+        if (available < minimum) {
+            checkpoint(stats, @"停止：创建会话前可用内存低于安全门槛");
+            return probeResult(false, @"当前可用内存偏低，未加载大模型；请关闭其他 App 后重试", stats);
+        }
+
+        auto interpreter = std::unique_ptr<MNN::Interpreter, decltype(&MNN::Interpreter::destroy)>(
+            MNN::Interpreter::createFromFile(path.fileSystemRepresentation), &MNN::Interpreter::destroy);
+        if (!interpreter) {
+            checkpoint(stats, @"停止：MNN 无法读取模型图");
+            return probeResult(false, @"MNN 无法读取模型图", stats);
+        }
+        checkpoint(stats, @"图已读取；开始创建会话");
+
+        MNN::BackendConfig backend;
+        backend.precision = flow ? MNN::BackendConfig::Precision_High : MNN::BackendConfig::Precision_Low;
+        backend.memory = MNN::BackendConfig::Memory_Low;
+        MNN::ScheduleConfig config;
+        config.type = flow ? MNN_FORWARD_METAL : MNN_FORWARD_CPU;
+        config.numThread = flow ? 1 : 4;
+        config.backendConfig = &backend;
+        MNN::Session *session = interpreter->createSession(config);
+        if (!session) {
+            checkpoint(stats, @"停止：会话创建失败");
+            return probeResult(false, @"MNN 会话创建失败；详见内存日志", stats);
+        }
+        checkpoint(stats, @"会话已创建；开始设置真实测试形状");
+
+        bool shapesOK = flow
+            ? setInputShape(interpreter.get(), session, "x", {1, 80, 512})
+              && setInputShape(interpreter.get(), session, "mask", {1, 1, 512})
+              && setInputShape(interpreter.get(), session, "mu", {1, 80, 512})
+              && setInputShape(interpreter.get(), session, "spks", {1, 80})
+              && setInputShape(interpreter.get(), session, "cond", {1, 80, 512})
+              && setInputShape(interpreter.get(), session, "t", {1})
+            : setInputShape(interpreter.get(), session, "mel", {1, 80, 160})
+              && setInputShape(interpreter.get(), session, "source_stft", {1, 18, 19201});
+        if (shapesOK) {
+            interpreter->resizeSession(session);
+            checkpoint(stats, flow ? @"Flow 512 帧 resize 完成" : @"HiFT 160 帧 resize 完成");
+        } else {
+            checkpoint(stats, @"输入名称不匹配，跳过 resize");
+        }
+        interpreter->releaseModel();
+        checkpoint(stats, @"原始模型已释放；尚未执行前向");
+        interpreter->releaseSession(session);
+        interpreter.reset();
+        checkpoint(stats, @"会话与解释器已释放");
+        std::this_thread::sleep_for(std::chrono::milliseconds(500));
+        checkpoint(stats, @"释放后 0.5 秒");
+        if (!shapesOK) return probeResult(false, @"模型输入名称不匹配；未执行前向", stats);
+        return probeResult(true, @"仅完成会话创建和 resize；未执行模型前向，不代表推理峰值", stats);
+    }
+}
 }
 
 @implementation MNNProbe
+
++ (NSString *)memoryProbeLogPath { return probeLogPath(); }
+
++ (NSDictionary<NSString *, id> *)probeFlowMetalMemoryAtDirectory:(NSString *)directory {
+    return probeLargeSession(directory, true);
+}
+
++ (NSDictionary<NSString *, id> *)probeHiFTCPUMemoryAtDirectory:(NSString *)directory {
+    return probeLargeSession(directory, false);
+}
 
 + (NSDictionary<NSString *, id> *)probeConditionerAtDirectory:(NSString *)directory {
     @autoreleasepool {

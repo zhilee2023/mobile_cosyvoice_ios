@@ -58,6 +58,6 @@ final class ModelStore: ObservableObject {
             }
         }
         found = total - missing.count - mismatched.count
-        status = ready ? "16/16 文件大小匹配；尚未完成真机推理验证" : "已识别 \(found)/\(total)；缺失 \(missing.count)，大小不符 \(mismatched.count)"
+        status = ready ? "\(total)/\(total) 文件大小匹配；尚未完成真机推理验证" : "已识别 \(found)/\(total)；缺失 \(missing.count)，大小不符 \(mismatched.count)"
     }
 }
