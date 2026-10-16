@@ -94,11 +94,13 @@ float peak(const std::vector<float> &values) {
 struct Graph {
     std::unique_ptr<MNN::Interpreter, decltype(&MNN::Interpreter::destroy)> net{nullptr, &MNN::Interpreter::destroy};
     MNN::Session *session = nullptr;
+    Trace *traceLog = nullptr;
     ~Graph() { if (session && net) net->releaseSession(session); }
     Graph(const Graph &) = delete;
     Graph &operator=(const Graph &) = delete;
     Graph() = default;
     bool open(NSString *path, bool metal, Trace &trace, NSString *name, bool lowPrecision = false) {
+        traceLog = &trace;
         auto started = std::chrono::steady_clock::now();
         net.reset(MNN::Interpreter::createFromFile(path.fileSystemRepresentation));
         trace.record([NSString stringWithFormat:@"%@ 图读取 %.3f 秒", name, secondsSince(started)]);
@@ -123,15 +125,18 @@ struct Graph {
         return true;
     }
     bool inputFloat(const char *name, const std::vector<float> &values) {
+        if (!finite(values)) {
+            traceLog->record([NSString stringWithFormat:@"输入 %s 含非有限值", name]);
+            return false;
+        }
         MNN::Tensor *input = net->getSessionInput(session, name);
         if (!input) return false;
         MNN::Tensor host(input, input->getDimensionType(), true);
         if (!host.host<float>() || host.usize() != values.size() * sizeof(float)) return false;
         std::memcpy(host.host<float>(), values.data(), values.size() * sizeof(float));
         if (input->copyFromHostTensor(&host)) return true;
-        if (!input->host<float>()) return false;
-        std::memcpy(input->host<float>(), values.data(), values.size() * sizeof(float));
-        return true;
+        traceLog->record([NSString stringWithFormat:@"输入 %s copyFromHostTensor 失败；未直接写入后端内存", name]);
+        return false;
     }
     bool inputInt(const char *name, const std::vector<int> &values) {
         MNN::Tensor *input = net->getSessionInput(session, name);
@@ -140,23 +145,50 @@ struct Graph {
         if (!host.host<int>() || host.usize() != values.size() * sizeof(int)) return false;
         std::memcpy(host.host<int>(), values.data(), values.size() * sizeof(int));
         if (input->copyFromHostTensor(&host)) return true;
-        if (!input->host<int>()) return false;
-        std::memcpy(input->host<int>(), values.data(), values.size() * sizeof(int));
-        return true;
+        traceLog->record([NSString stringWithFormat:@"输入 %s 整数复制失败", name]);
+        return false;
     }
     bool output(const char *name, size_t count, std::vector<float> &values) {
         MNN::Tensor *tensor = net->getSessionOutput(session, name);
-        if (!tensor) return false;
+        if (!tensor) {
+            traceLog->record([NSString stringWithFormat:@"输出 %s 不存在", name]);
+            return false;
+        }
+        NSMutableString *dimensions = [NSMutableString string];
+        for (int dimension : tensor->shape()) [dimensions appendFormat:@"%@%d", dimensions.length ? @"×" : @"", dimension];
         MNN::Tensor host(tensor, tensor->getDimensionType(), true);
-        if (!host.host<float>() || host.usize() != count * sizeof(float)) return false;
+        auto type = tensor->getType();
+        traceLog->record([NSString stringWithFormat:@"输出 %s：shape=%@；type=%d/%d-bit；hostBytes=%zu，expectedBytes=%zu",
+                          name, dimensions, int(type.code), int(type.bits), size_t(host.usize()), count * sizeof(float)]);
+        if (!host.host<float>() || type.code != halide_type_float || type.bits != 32 || host.usize() != count * sizeof(float)) {
+            traceLog->record(@"输出形状、类型或主机缓冲大小不匹配；未读取数据");
+            return false;
+        }
         if (!tensor->copyToHostTensor(&host)) {
-            if (!tensor->host<float>()) return false;
-            std::memcpy(host.host<float>(), tensor->host<float>(), count * sizeof(float));
+            traceLog->record(@"输出 copyToHostTensor 失败；未直接读取后端内存");
+            return false;
         }
         values.assign(host.host<float>(), host.host<float>() + count);
-        return finite(values);
+        size_t invalidCount = 0, firstInvalid = 0;
+        for (size_t index = 0; index < values.size(); ++index) {
+            if (!std::isfinite(values[index])) {
+                if (invalidCount == 0) firstInvalid = index;
+                ++invalidCount;
+            }
+        }
+        if (invalidCount) {
+            traceLog->record([NSString stringWithFormat:@"输出 %s 非有限值 %zu/%zu；首个位置 %zu；值=%g",
+                              name, invalidCount, count, firstInvalid, double(values[firstInvalid])]);
+            return false;
+        }
+        traceLog->record([NSString stringWithFormat:@"输出 %s 全部有限；峰值 %.6f", name, peak(values)]);
+        return true;
     }
-    bool run() { return net->runSession(session) == MNN::NO_ERROR; }
+    bool run() {
+        auto code = net->runSession(session);
+        if (code != MNN::NO_ERROR) traceLog->record([NSString stringWithFormat:@"runSession 返回错误 %d", int(code)]);
+        return code == MNN::NO_ERROR;
+    }
     void releaseModel() { net->releaseModel(); }
 };
 int reflected(int index, int length) {
@@ -187,9 +219,14 @@ bool writeWav(const std::vector<float> &samples) {
 + (NSString *)generatedWavPath { return documentPath(@"last-generated.wav"); }
 
 + (NSDictionary<NSString *, id> *)runFixedTokenSampleAtDirectory:(NSString *)directory {
+    return [self runFixedTokenSampleAtDirectory:directory lowPrecisionFlow:NO];
+}
+
++ (NSDictionary<NSString *, id> *)runFixedTokenSampleAtDirectory:(NSString *)directory lowPrecisionFlow:(BOOL)lowPrecision {
     @autoreleasepool {
         Trace trace;
-        trace.record(@"开始：固定 25 个真实 LLM speech token → Conditioner CPU High → Flow CPU Low 256 → HiFT CPU High；不运行手机文字 LLM", true);
+        NSString *flowLabel = lowPrecision ? @"Flow CPU Low" : @"Flow CPU High";
+        trace.record([NSString stringWithFormat:@"开始：固定 25 个真实 LLM speech token → Conditioner CPU High → %@ 256 → HiFT CPU High；不运行手机文字 LLM", flowLabel], true);
         if (os_proc_available_memory() < 2800000000ULL) {
             trace.record(@"停止：初始可用内存低于 2800 MB");
             return result(false, @"初始可用内存不足；未加载模型", trace);
@@ -244,7 +281,7 @@ bool writeWav(const std::vector<float> &samples) {
         std::vector<float> mel(80 * kAudioFrames);
         {
             Graph flow;
-            if (!flow.open([directory stringByAppendingPathComponent:@"flow.cfg-student-2step.batch1.fp16.mnn"], false, trace, @"Flow CPU Low", true))
+            if (!flow.open([directory stringByAppendingPathComponent:@"flow.cfg-student-2step.batch1.fp16.mnn"], false, trace, flowLabel, lowPrecision))
                 return result(false, @"Flow 会话失败", trace);
             if (!(flow.shape("x", {1, 80, kFlowFrames}) && flow.shape("mask", {1, 1, kFlowFrames}) &&
                   flow.shape("mu", {1, 80, kFlowFrames}) && flow.shape("spks", {1, 80}) &&
@@ -252,7 +289,7 @@ bool writeWav(const std::vector<float> &samples) {
                 return result(false, @"Flow 输入形状失败", trace);
             auto started = std::chrono::steady_clock::now();
             flow.net->resizeSession(flow.session);
-            trace.record([NSString stringWithFormat:@"Flow CPU Low 256 resize %.3f 秒；尚未前向", secondsSince(started)]);
+            trace.record([NSString stringWithFormat:@"%@ 256 resize %.3f 秒；尚未前向", flowLabel, secondsSince(started)]);
             flow.releaseModel();
             if (os_proc_available_memory() < 1200000000ULL) {
                 trace.record(@"安全停止：Flow resize 后可用内存低于 1200 MB；未前向");
@@ -261,7 +298,7 @@ bool writeWav(const std::vector<float> &samples) {
             const float midpoint = float(1.0 - std::cos(kPi / 4.0));
             for (int step = 0; step < 2; ++step) {
                 std::vector<float> time = {step == 0 ? 0.0f : midpoint};
-                trace.record([NSString stringWithFormat:@"Flow CPU Low %d/2 开始；重新传入全部六个输入", step + 1]);
+                trace.record([NSString stringWithFormat:@"%@ %d/2 开始；重新传入全部六个输入", flowLabel, step + 1]);
                 started = std::chrono::steady_clock::now();
                 if (!(flow.inputFloat("x", x) && flow.inputFloat("mask", mask) &&
                       flow.inputFloat("mu", paddedMu) && flow.inputFloat("spks", spks) &&
@@ -269,6 +306,8 @@ bool writeWav(const std::vector<float> &samples) {
                     trace.record(@"停止：Flow 输入或前向失败");
                     return result(false, @"Flow 前向失败", trace);
                 }
+                trace.record([NSString stringWithFormat:@"%@ %d/2 runSession 返回成功，%.3f 秒；开始读取输出",
+                              flowLabel, step + 1, secondsSince(started)]);
                 std::vector<float> velocity;
                 if (!flow.output("estimator_out", x.size(), velocity)) {
                     trace.record(@"停止：Flow 输出含非有限值或形状错误");
@@ -392,8 +431,8 @@ bool writeWav(const std::vector<float> &samples) {
             trace.record([NSString stringWithFormat:@"停止：PCM/WAV 异常；RMS %.6f，峰值 %.5f", rms, peak(pcm)]);
             return result(false, @"PCM 静音、越界或 WAV 写入失败", trace);
         }
-        trace.record([NSString stringWithFormat:@"完成：iPhone 固定 token→Flow CPU Low→1.00 秒 WAV；总耗时 %.3f 秒；RTF %.3f；RMS %.5f；PCM 峰值 %.5f。不是手机文字 LLM，也不是流式。",
-                      secondsSince(trace.start), secondsSince(trace.start), rms, peak(pcm)]);
+        trace.record([NSString stringWithFormat:@"完成：iPhone 固定 token→%@→1.00 秒 WAV；总耗时 %.3f 秒；RTF %.3f；RMS %.5f；PCM 峰值 %.5f。不是手机文字 LLM，也不是流式。",
+                      flowLabel, secondsSince(trace.start), secondsSince(trace.start), rms, peak(pcm)]);
         return result(true, @"固定 speech token→1 秒语音已在 iPhone 完成；不是手机文字 LLM 或流式", trace);
     }
 }

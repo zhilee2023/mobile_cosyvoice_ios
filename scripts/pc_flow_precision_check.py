@@ -30,7 +30,7 @@ def main() -> int:
     report = {"scope": "Windows CPU regression; ARM CPU Low still requires iPhone validation",
               "effective_frames": int(mu.shape[1]), "flow_frames": 256, "cases": {}}
     results = {}
-    for precision in ("normal", "low"):
+    for precision in ("normal", "high", "low"):
         started = time.perf_counter()
         mel, flow_seconds = flow(model, mu, runtime_length=256, memory="low", precision=precision)
         pcm, times = hift(model, mel)

@@ -19,6 +19,8 @@ struct ContentView: View {
             Form {
                 Section("项目状态") {
                     Label("MNN / iPhone 15 · 端侧", systemImage: "iphone")
+                    Text("版本 \(Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "未知")")
+                        .font(.caption).foregroundStyle(.secondary)
                     Text("可测固定 speech token → 1 秒端侧语音；手机文字 LLM 和连续流式生成尚未接通。")
                         .foregroundStyle(.secondary)
                 }
@@ -46,9 +48,11 @@ struct ContentView: View {
                     Text(probeResult).font(.caption).textSelection(.enabled)
                 }
                 Section("端侧生成试验 · 固定 speech token") {
-                    Text("用 PC 文字模型预生成的 25 个 token，在本机运行 Conditioner → Flow CPU Low 256 帧 → HiFT，生成约 1 秒 WAV。不会使用上方输入文字；内存不足会停止。")
+                    Text("用 PC 文字模型预生成的 25 个 token，在本机运行 Conditioner → Flow CPU High 256 帧 → HiFT，生成约 1 秒 WAV。不会使用上方输入文字；内存不足会停止。")
                         .font(.caption).foregroundStyle(.secondary)
-                    Button(generationRunning ? "生成与记录中…" : "生成 1 秒固定样例 · Flow CPU Low") { runGeneration() }
+                    Button(generationRunning ? "生成与记录中…" : "生成 1 秒固定样例 · Flow CPU High") { runGeneration() }
+                        .disabled(!models.ready || generationRunning || probeRunning || memoryProbeRunning)
+                    Button("复现 CPU Low · 详细输出诊断") { runGeneration(lowPrecision: true) }
                         .disabled(!models.ready || generationRunning || probeRunning || memoryProbeRunning)
                     Text(generationResult).font(.caption).textSelection(.enabled)
                     let generationLog = CosyVoiceGenerate.generationLogPath()
@@ -130,12 +134,12 @@ struct ContentView: View {
         }
     }
 
-    private func runGeneration() {
+    private func runGeneration(lowPrecision: Bool = false) {
         let path = models.directory.path
         generationRunning = true
         generationResult = "正在依次运行模型；若 App 退出，重开后分享生成日志…"
         DispatchQueue.global(qos: .userInitiated).async {
-            let result = CosyVoiceGenerate.runFixedTokenSample(atDirectory: path)
+            let result = CosyVoiceGenerate.runFixedTokenSample(atDirectory: path, lowPrecisionFlow: lowPrecision)
             DispatchQueue.main.async {
                 generationRunning = false
                 let message = result["message"] as? String ?? "生成未返回结果"
