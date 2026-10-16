@@ -10,11 +10,15 @@ struct ContentView: View {
     @State private var probeRunning = false
     @State private var memoryProbeResult = "尚未测试大型模型内存"
     @State private var memoryProbeRunning = false
-    @State private var generationRunning = false
+    @State private var singleGenerationRunning = false
+    @StateObject private var sentenceStream = SentenceStream()
+    @State private var optimizedSentences = true
+    @State private var sentenceThreads = 4
     @State private var generationResult = "尚未运行手机模型生成"
     @State private var demoRunning = false
     @State private var firstChunkMilliseconds: Int?
     @State private var errorMessage: String?
+    private var generationRunning: Bool { singleGenerationRunning || sentenceStream.isRunning }
 
     var body: some View {
         NavigationStack {
@@ -23,7 +27,7 @@ struct ContentView: View {
                     Label("MNN / iPhone 15 · 端侧", systemImage: "iphone")
                     Text("版本 \(Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "未知")")
                         .font(.caption).foregroundStyle(.secondary)
-                    Text("短句文字 → 手机 LLM → Flow CPU High → HiFT；串行生成试验，尚未验证连续流式。")
+                    Text("短句全链路已在 iPhone 验证。新增按句生成即播：模型仍逐段串行，播放可与下一句生成重叠；不是 token 级流式。")
                         .foregroundStyle(.secondary)
                 }
                 Section("模型") {
@@ -39,12 +43,43 @@ struct ContentView: View {
                 Section("输入文字") {
                     TextEditor(text: $text)
                         .frame(minHeight: 95)
-                    Text("\(text.utf16.count)/40 字符 · 首版最多 160 speech token，约 6.4 秒；超过上限会停止。")
+                    Text("\(text.utf16.count) UTF-16 单元 · 单句入口≤40；句级长文入口≤2000，按标点/长度拆段，每段最多160语音token。")
                         .font(.caption).foregroundStyle(.secondary)
                     Button(generationRunning ? "生成中…" : "用当前文字生成 · CPU") { runGeneration(useText: true) }
                         .disabled(!models.ready || generationRunning || probeRunning || memoryProbeRunning || text.isEmpty)
-                    Text("手机 LLM 先生成整句 token，释放后运行 Flow 与 HiFT；首次完整真机结果待验证。")
+                    Text("手机 LLM 先生成整句 token，释放后运行 Flow 与 HiFT。已验证5.96秒音频，耗时7.834秒、RTF1.314。")
                         .font(.caption).foregroundStyle(.secondary)
+                }
+                Section("句级生成与 RTF 对照 · 实验") {
+                    Toggle("优化候选：缩小 Flow 补零尺寸 / DSP 查表", isOn: $optimizedSentences)
+                        .disabled(generationRunning)
+                    Picker("CPU 线程对照", selection: $sentenceThreads) {
+                        Text("4 线程（已验证基线）").tag(4)
+                        Text("2 线程（速度待测）").tag(2)
+                    }.disabled(generationRunning)
+                    Button("填入三句测试文字") {
+                        text = "你好，欢迎来到离线语音测试。我们正在测试按句生成和播放。希望每一句都清晰自然。"
+                    }.disabled(generationRunning)
+                    Button(sentenceStream.isRunning ? "句级生成与播放中…" : "按句生成，首句完成即播放") {
+                        wavPlayer?.stop()
+                        sentenceStream.start(text: text, directory: models.directory.path,
+                                             optimized: optimizedSentences, threads: sentenceThreads, player: player)
+                    }.disabled(!models.ready || generationRunning || probeRunning || memoryProbeRunning || demoRunning)
+                    Button("停止句级生成与播放") { sentenceStream.stop() }
+                        .disabled(!sentenceStream.isRunning)
+                    Text(sentenceStream.status).font(.caption).textSelection(.enabled)
+                    Text("队列 \(player.queuedSeconds, specifier: "%.2f") 秒 · 已生成 \(sentenceStream.audioSeconds, specifier: "%.2f") 秒 · 队列断供观测 \(player.gapCount) 次")
+                        .font(.caption)
+                    Text("每句释放模型；最多保留一条待播句段。停止后当前短句推理会先返回再释放。RTF>1时仍可能句间等待，分句本身不保证实时。关闭优化并选4线程可对照旧链路；2线程需另测。")
+                        .font(.caption).foregroundStyle(.secondary)
+                    if FileManager.default.fileExists(atPath: SentenceStream.logURL.path) {
+                        ShareLink("分享句级汇总日志", item: SentenceStream.logURL).disabled(generationRunning)
+                        ShareLink("分享各句模型诊断", item: SentenceStream.documents.appendingPathComponent("last-sentence-diagnostics.log"))
+                            .disabled(generationRunning)
+                    }
+                    if FileManager.default.fileExists(atPath: SentenceStream.audioURL.path) {
+                        ShareLink("分享最近完整长文 WAV", item: SentenceStream.audioURL).disabled(generationRunning)
+                    }
                 }
                 Section("真机探针") {
                     Button("探测 Conditioner MNN 会话") { runProbe() }
@@ -106,7 +141,7 @@ struct ContentView: View {
                         Task { await playDemoChunks() }
                     }
                     .disabled(demoRunning || generationRunning)
-                    Button("停止播放") { player.stop() }
+                    Button("停止播放") { player.stop() }.disabled(generationRunning)
                     Text("\(player.status) · 队列 \(player.queuedSeconds, specifier: "%.2f") 秒")
                     if let firstChunkMilliseconds {
                         Text("自测首块入队：\(firstChunkMilliseconds) 毫秒；不等于模型首包延迟")
@@ -153,14 +188,14 @@ struct ContentView: View {
         let inputText = text
         wavPlayer?.stop()
         player.stop()
-        generationRunning = true
+        singleGenerationRunning = true
         generationResult = "正在依次运行模型；若 App 退出，重开后分享生成日志…"
         DispatchQueue.global(qos: .userInitiated).async {
             let result = useText
                 ? CosyVoiceGenerate.generateText(inputText, atDirectory: path)
                 : CosyVoiceGenerate.runFixedTokenSample(atDirectory: path, lowPrecisionFlow: lowPrecision)
             DispatchQueue.main.async {
-                generationRunning = false
+                singleGenerationRunning = false
                 let message = result["message"] as? String ?? "生成未返回结果"
                 let peak = result["peakFootprintMB"] as? Double ?? 0
                 let available = result["minAvailableMB"] as? Double ?? 0

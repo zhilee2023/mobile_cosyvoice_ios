@@ -1,4 +1,5 @@
 #import "CosyVoiceGenerate.h"
+#include "CosyVoiceDSP.hpp"
 #import <MNN/Interpreter.hpp>
 #import <MNN/llm/llm.hpp>
 #import <mach/mach.h>
@@ -133,7 +134,7 @@ float peak(const std::vector<float> &values) {
 }
 
 bool generateSpeechTokens(NSString *directory, NSString *text, const std::vector<int> &prompt,
-                          Trace &trace, std::vector<int> &speech, NSString **failure) {
+                          Trace &trace, std::vector<int> &speech, NSString **failure, int cpuThreads, bool *limitReached) {
     @autoreleasepool {
         NativeLogCapture nativeLog;
         if (!nativeLog.active) trace.record(@"警告：无法完整捕获 MNN 原始日志，仍将记录阶段与文件检查");
@@ -145,7 +146,7 @@ bool generateSpeechTokens(NSString *directory, NSString *text, const std::vector
         }
         NSMutableDictionary *config = [base mutableCopy];
         config[@"backend_type"] = @"cpu";
-        config[@"thread_num"] = @4;
+        config[@"thread_num"] = @(cpuThreads);
         config[@"precision"] = @"low";
         config[@"memory"] = @"low";
         config[@"sampler_type"] = @"mixed";
@@ -228,6 +229,7 @@ bool generateSpeechTokens(NSString *directory, NSString *text, const std::vector
                       context ? context->decode_us / 1e6 : 0.0, speech.size(), invalidCount,
                       eos ? @"是" : @"否", context ? int(context->status) : -1]);
         if (speech.empty() || invalidCount || !eos || speech.size() > kMaxSpeechTokens) {
+            *limitReached = !invalidCount && speech.size() >= kMaxSpeechTokens && (!eos || speech.size() > kMaxSpeechTokens);
             nativeLog.recordFailure(trace);
             *failure = !eos || speech.size() > kMaxSpeechTokens
                 ? @"短句超过首版 160 speech token 上限（约 6.4 秒），未截断合成；请缩短文字"
@@ -258,10 +260,12 @@ struct Graph {
     std::unique_ptr<MNN::Interpreter, decltype(&MNN::Interpreter::destroy)> net{nullptr, &MNN::Interpreter::destroy};
     MNN::Session *session = nullptr;
     Trace *traceLog = nullptr;
+    int cpuThreads;
+    bool performance;
     ~Graph() { if (session && net) net->releaseSession(session); }
     Graph(const Graph &) = delete;
     Graph &operator=(const Graph &) = delete;
-    Graph() = default;
+    explicit Graph(int threads = 4, bool fast = false) : cpuThreads(threads), performance(fast) {}
     bool open(NSString *path, bool metal, Trace &trace, NSString *name, bool lowPrecision = false) {
         traceLog = &trace;
         auto started = std::chrono::steady_clock::now();
@@ -271,10 +275,11 @@ struct Graph {
         MNN::BackendConfig backend;
         backend.precision = lowPrecision ? MNN::BackendConfig::Precision_Low : MNN::BackendConfig::Precision_High;
         backend.memory = MNN::BackendConfig::Memory_Low;
+        backend.power = performance ? MNN::BackendConfig::Power_High : MNN::BackendConfig::Power_Normal;
         MNN::ScheduleConfig config;
         config.type = metal ? MNN_FORWARD_METAL : MNN_FORWARD_CPU;
         config.backupType = MNN_FORWARD_CPU;
-        config.numThread = metal ? 1 : 4;
+        config.numThread = metal ? 1 : cpuThreads;
         config.backendConfig = &backend;
         started = std::chrono::steady_clock::now();
         session = net->createSession(config);
@@ -378,33 +383,43 @@ bool writeWav(const std::vector<float> &samples) {
 }
 
 @interface CosyVoiceGenerate ()
-+ (NSDictionary<NSString *, id> *)runAtDirectory:(NSString *)directory text:(nullable NSString *)text lowPrecisionFlow:(BOOL)lowPrecision;
++ (NSDictionary<NSString *, id> *)runAtDirectory:(NSString *)directory text:(nullable NSString *)text lowPrecisionFlow:(BOOL)lowPrecision optimized:(BOOL)optimized cpuThreads:(NSInteger)threads;
 @end
 
 @implementation CosyVoiceGenerate
 + (NSString *)generationLogPath { return documentPath(@"last-generation.log"); }
 + (NSString *)llmRuntimeLogPath { return documentPath(@"last-llm-runtime.log"); }
 + (NSString *)generatedWavPath { return documentPath(@"last-generated.wav"); }
++ (NSDictionary<NSString *, NSNumber *> *)memorySnapshot {
+    return @{@"footprintMB": @(footprintBytes() / 1e6), @"availableMB": @(os_proc_available_memory() / 1e6)};
+}
 
 + (NSDictionary<NSString *, id> *)runFixedTokenSampleAtDirectory:(NSString *)directory {
     return [self runFixedTokenSampleAtDirectory:directory lowPrecisionFlow:NO];
 }
 
 + (NSDictionary<NSString *, id> *)runFixedTokenSampleAtDirectory:(NSString *)directory lowPrecisionFlow:(BOOL)lowPrecision {
-    return [self runAtDirectory:directory text:nil lowPrecisionFlow:lowPrecision];
+    return [self runAtDirectory:directory text:nil lowPrecisionFlow:lowPrecision optimized:NO cpuThreads:4];
 }
 
 + (NSDictionary<NSString *, id> *)generateText:(NSString *)text atDirectory:(NSString *)directory {
-    return [self runAtDirectory:directory text:text lowPrecisionFlow:NO];
+    return [self generateText:text atDirectory:directory optimized:NO cpuThreads:4];
 }
 
-+ (NSDictionary<NSString *, id> *)runAtDirectory:(NSString *)directory text:(nullable NSString *)text lowPrecisionFlow:(BOOL)lowPrecision {
++ (NSDictionary<NSString *, id> *)generateText:(NSString *)text atDirectory:(NSString *)directory optimized:(BOOL)optimized cpuThreads:(NSInteger)threads {
+    return [self runAtDirectory:directory text:text lowPrecisionFlow:NO optimized:optimized cpuThreads:threads];
+}
+
++ (NSDictionary<NSString *, id> *)runAtDirectory:(NSString *)directory text:(nullable NSString *)text lowPrecisionFlow:(BOOL)lowPrecision optimized:(BOOL)optimized cpuThreads:(NSInteger)threads {
     @autoreleasepool {
         Trace trace;
+        const int cpuThreads = threads == 2 ? 2 : 4;
         NSString *flowLabel = lowPrecision ? @"Flow CPU Low" : @"Flow CPU High";
         const bool textGeneration = text != nil;
         trace.record([NSString stringWithFormat:@"开始：%@ → Conditioner CPU High → %@ → HiFT CPU High；串行生成 WAV",
                       textGeneration ? @"当前文字→手机 LLM" : @"固定 25 个 PC speech token（不运行手机文字 LLM）", flowLabel], true);
+        trace.record([NSString stringWithFormat:@"运行参数：%d CPU 线程；%@；模型精度和两步 Flow 不变",
+                      cpuThreads, optimized ? @"优化候选（Flow 32 帧对齐、DSP 查表）" : @"v0.4.1 基线"]);
         if (textGeneration) {
             text = [text stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
             if (text.length == 0 || text.length > 40) {
@@ -430,14 +445,18 @@ bool writeWav(const std::vector<float> &samples) {
         if (textGeneration) {
             speech.clear();
             NSString *failure = nil;
-            if (!generateSpeechTokens(directory, text, tokens, trace, speech, &failure)) {
+            bool limitReached = false;
+            if (!generateSpeechTokens(directory, text, tokens, trace, speech, &failure, cpuThreads, &limitReached)) {
                 trace.record([@"停止：" stringByAppendingString:failure ?: @"LLM 失败"]);
-                return result(false, failure ?: @"LLM 失败", trace);
+                NSMutableDictionary *failed = [result(false, failure ?: @"LLM 失败", trace) mutableCopy];
+                failed[@"retrySplit"] = @(limitReached);
+                return failed;
             }
         }
         const int audioFrames = int(speech.size()) * 2;
         const int effectiveFrames = kPromptFrames + audioFrames;
-        const int flowFrames = effectiveFrames <= 256 ? 256 : (effectiveFrames <= 384 ? 384 : 512);
+        const int flowFrames = optimized ? ((effectiveFrames + 31) / 32) * 32 :
+            (effectiveFrames <= 256 ? 256 : (effectiveFrames <= 384 ? 384 : 512));
         const int stftFrames = audioFrames * 120 + 1;
         const double audioSeconds = double(audioFrames * kHop) / kSampleRate;
         trace.record([NSString stringWithFormat:@"目标 %zu speech token；有效 Mel %d 帧；Flow 图 %d 帧；目标音频 %.2f 秒",
@@ -445,7 +464,7 @@ bool writeWav(const std::vector<float> &samples) {
         tokens.insert(tokens.end(), speech.begin(), speech.end());
         std::vector<float> mu;
         {
-            Graph conditioner;
+            Graph conditioner(cpuThreads, optimized);
             if (!conditioner.open([directory stringByAppendingPathComponent:@"flow-conditioner.fp32.mnn"], false, trace, @"Conditioner"))
                 return result(false, @"Conditioner 会话失败", trace);
             if (!conditioner.shape("tokens", {1, int(tokens.size())})) return result(false, @"Conditioner 输入形状失败", trace);
@@ -481,7 +500,7 @@ bool writeWav(const std::vector<float> &samples) {
         }
         std::vector<float> mel(80 * audioFrames);
         {
-            Graph flow;
+            Graph flow(cpuThreads, optimized);
             if (!flow.open([directory stringByAppendingPathComponent:@"flow.cfg-student-2step.batch1.fp16.mnn"], false, trace, flowLabel, lowPrecision))
                 return result(false, @"Flow 会话失败", trace);
             if (!(flow.shape("x", {1, 80, flowFrames}) && flow.shape("mask", {1, 1, flowFrames}) &&
@@ -535,7 +554,7 @@ bool writeWav(const std::vector<float> &samples) {
         }
         std::vector<float> f0;
         {
-            Graph graph;
+            Graph graph(cpuThreads, optimized);
             if (!graph.open([directory stringByAppendingPathComponent:@"hift-f0.fp32.mnn"], false, trace, @"HiFT F0"))
                 return result(false, @"HiFT F0 会话失败", trace);
             if (!graph.shape("mel", {1, 80, audioFrames})) return result(false, @"HiFT F0 形状失败", trace);
@@ -569,6 +588,10 @@ bool writeWav(const std::vector<float> &samples) {
             }
         }
         std::vector<float> stft(18 * stftFrames);
+        auto dspStarted = std::chrono::steady_clock::now();
+        if (optimized) {
+            stft = CosyVoiceDSP::stft(source, stftFrames);
+        } else {
         for (int frame = 0; frame < stftFrames; ++frame) {
             for (int bin = 0; bin < 9; ++bin) {
                 double real = 0, imag = 0;
@@ -582,12 +605,14 @@ bool writeWav(const std::vector<float> &samples) {
                 stft[(bin + 9) * stftFrames + frame] = float(imag);
             }
         }
+        }
         source.clear(); source.shrink_to_fit();
         trace.record([NSString stringWithFormat:@"HiFT source STFT 完成；峰值 %.5f", peak(stft)]);
+        trace.record([NSString stringWithFormat:@"STFT DSP %.3f 秒", secondsSince(dspStarted)]);
         if (os_proc_available_memory() < 1000000000ULL) return result(false, @"HiFT core 前内存不足", trace);
         std::vector<float> spectral;
         {
-            Graph graph;
+            Graph graph(cpuThreads, optimized);
             if (!graph.open([directory stringByAppendingPathComponent:@"hift-core.fp32.mnn"], false, trace, @"HiFT core"))
                 return result(false, @"HiFT core 会话失败", trace);
             if (!(graph.shape("mel", {1, 80, audioFrames}) &&
@@ -599,6 +624,11 @@ bool writeWav(const std::vector<float> &samples) {
                 return result(false, @"HiFT core 前向失败", trace);
             trace.record([NSString stringWithFormat:@"HiFT core 完成；频谱峰值 %.5f", peak(spectral)]);
         }
+        dspStarted = std::chrono::steady_clock::now();
+        std::vector<float> pcm(audioFrames * kHop);
+        if (optimized) {
+            pcm = CosyVoiceDSP::istft(spectral, stftFrames, int(pcm.size()));
+        } else {
         std::vector<double> accumulated((stftFrames - 1) * 4 + kFft, 0), envelope(accumulated.size(), 0);
         for (int frame = 0; frame < stftFrames; ++frame) {
             for (int index = 0; index < kFft; ++index) {
@@ -618,12 +648,13 @@ bool writeWav(const std::vector<float> &samples) {
                 envelope[position] += window * window;
             }
         }
-        std::vector<float> pcm(audioFrames * kHop);
         for (size_t index = 0; index < pcm.size(); ++index) {
             size_t position = index + kFft / 2;
             double value = envelope[position] > 1e-11 ? accumulated[position] / envelope[position] : accumulated[position];
             pcm[index] = float(std::clamp(value, -0.99, 0.99));
         }
+        }
+        trace.record([NSString stringWithFormat:@"ISTFT DSP %.3f 秒", secondsSince(dspStarted)]);
         if (!finite(pcm)) return result(false, @"PCM 含非有限值", trace);
         double energy = 0;
         for (float value : pcm) energy += double(value) * value;
@@ -636,8 +667,12 @@ bool writeWav(const std::vector<float> &samples) {
         trace.record([NSString stringWithFormat:@"完成：%@→%@→%.2f 秒 WAV；总耗时 %.3f 秒；RTF %.3f；RMS %.5f；PCM 峰值 %.5f；整句串行，非流式。",
                       textGeneration ? @"当前文字→手机 LLM" : @"固定 PC speech token", flowLabel, audioSeconds,
                       elapsed, elapsed / audioSeconds, rms, peak(pcm)]);
-        return result(true, [NSString stringWithFormat:@"%@生成 %.2f 秒 WAV；非流式",
-                             textGeneration ? @"手机文字 LLM→Flow→HiFT 已" : @"固定 token 已", audioSeconds], trace);
+        NSMutableDictionary *completed = [result(true, [NSString stringWithFormat:@"%@生成 %.2f 秒 WAV；非流式",
+                             textGeneration ? @"手机文字 LLM→Flow→HiFT 已" : @"固定 token 已", audioSeconds], trace) mutableCopy];
+        completed[@"audioSeconds"] = @(audioSeconds);
+        completed[@"generationSeconds"] = @(elapsed);
+        completed[@"rtf"] = @(elapsed / audioSeconds);
+        return completed;
     }
 }
 @end

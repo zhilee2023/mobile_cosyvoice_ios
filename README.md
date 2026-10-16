@@ -1,11 +1,12 @@
 # CosyVoice3 → MNN → iPhone
 
-**iPhone CPU High 已完成固定 speech token→1 秒 WAV：1.970 秒、采样峰值 1,514 MB。** v0.4.1 修复短句文字链路的 LLM 重复路径加载错误，增加文件预检与原始日志；完整手机文字生成仍须真机验证。连续分块和真流式尚未接通。ACE-Step 工程 `C:\ace-step-mnn-ios` 保留且不受本项目改动。
+**iPhone 已完成当前文字→手机 LLM→Flow CPU High→HiFT：5.96 秒音频，耗时 7.834 秒、RTF 1.314、采样峰值 1,558 MB。** v0.5.0 新增有限队列的按句生成即播，以及 Flow 尺寸/DSP/2或4线程对照；新版本仍须真机验收，不声称RTF已降低。ACE-Step 工程 `C:\ace-step-mnn-ios` 保留且不受本项目改动。
 
 独立于 `C:\ace-step-mnn-ios` 的端侧流式语音合成工程。首选模型为公开的 **Fun-CosyVoice3-0.5B-2512**，运行时只使用 **MNN**；不调用云端 TTS，也不把 MLX 当作 iPhone 推理后端。
 
 ## 当前状态
 
+- v0.4.1 已由真机日志确认完整手机文字链路成功，149个有效speech token、正常EOS、5.96秒WAV，最低可用1,663 MB。v0.5.0 按句流水支持输入≤2000 UTF-16单元/128段，首句完成后开始播放、随后逐句释放模型；待播队列目标≤2秒/硬上限4秒。优化候选保持CPU High和两步Flow，只缩小补零尺寸、优化DSP，另提供2/4线程对照。详见 [句级流水、安卓参考与验收](docs/sentence-stream-v050.md)。它不是句内token级流式；时长、听感、RTF和内存稳定性仍须真机验证。
 - 已搭建 iOS 17+ SwiftUI 应用、MNN C++ 桥、模型文件检查、24 kHz 单声道分块播放与首包/RTF 指标框架。
 - `试听播放链路` 只播放本地生成的测试音，不是 CosyVoice 推理。
 - `探测 Conditioner` 只验证一个 MNN 小图能在手机上加载、创建 CPU 会话。Flow Metal High（256 帧）与 HiFT core CPU Low（160 帧）的单独会话内存试验只做创建/resize。此前 512 帧 Flow 真机 resize 占 2,957 MB、仅余 264 MB，因此不再提供 512 帧按钮。日志保存在文件共享区 `last-memory-probe.log`。
