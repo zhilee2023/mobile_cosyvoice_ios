@@ -24,12 +24,16 @@ jobs:
           sh package_scripts/ios/buildiOS.sh \
             -DMNN_LOW_MEMORY=ON \
             -DMNN_SUPPORT_TRANSFORMER_FUSE=ON \
+            -DMNN_BUILD_LLM=ON \
+            -DMNN_LLM_BUILD_DEMO=OFF \
+            -DLLM_SUPPORT_HTTP_RESOURCE=OFF \
             -DMNN_OPENCL=OFF
       - name: Stage framework
         run: |
           mkdir -p Vendor
           cp -R MNN/MNN-iOS-CPU-GPU/Static/MNN.framework Vendor/
           test -f Vendor/MNN.framework/MNN
+          test -f Vendor/MNN.framework/Headers/llm/llm.hpp
       - name: Generate Xcode project
         run: xcodegen generate
       - name: Build unsigned app

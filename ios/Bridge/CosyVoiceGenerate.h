@@ -5,6 +5,7 @@ NS_ASSUME_NONNULL_BEGIN
 @interface CosyVoiceGenerate : NSObject
 + (NSDictionary<NSString *, id> *)runFixedTokenSampleAtDirectory:(NSString *)directory;
 + (NSDictionary<NSString *, id> *)runFixedTokenSampleAtDirectory:(NSString *)directory lowPrecisionFlow:(BOOL)lowPrecision;
++ (NSDictionary<NSString *, id> *)generateText:(NSString *)text atDirectory:(NSString *)directory;
 + (NSString *)generationLogPath;
 + (NSString *)generatedWavPath;
 @end

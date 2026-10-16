@@ -1,9 +1,11 @@
 import SwiftUI
+import AVFoundation
 
 struct ContentView: View {
     @StateObject private var models = ModelStore()
     @StateObject private var player = ChunkPlayer()
-    @State private var text = "你好，这是 CosyVoice 在 iPhone 上的端侧流式语音测试。"
+    @State private var text = "你好，欢迎来到离线语音测试。"
+    @State private var wavPlayer: AVAudioPlayer?
     @State private var probeResult = "尚未运行 MNN 探针"
     @State private var probeRunning = false
     @State private var memoryProbeResult = "尚未测试大型模型内存"
@@ -21,7 +23,7 @@ struct ContentView: View {
                     Label("MNN / iPhone 15 · 端侧", systemImage: "iphone")
                     Text("版本 \(Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "未知")")
                         .font(.caption).foregroundStyle(.secondary)
-                    Text("可测固定 speech token → 1 秒端侧语音；手机文字 LLM 和连续流式生成尚未接通。")
+                    Text("短句文字 → 手机 LLM → Flow CPU High → HiFT；串行生成试验，尚未验证连续流式。")
                         .foregroundStyle(.secondary)
                 }
                 Section("模型") {
@@ -37,9 +39,11 @@ struct ContentView: View {
                 Section("输入文字") {
                     TextEditor(text: $text)
                         .frame(minHeight: 95)
-                    Button("CosyVoice 流式生成（尚未接通）") {}
-                        .disabled(true)
-                    Text("只有 LLM 增量 token → Flow/HiFT 分块 → 播放全部接通后才启用。")
+                    Text("\(text.utf16.count)/40 字符 · 首版最多 160 speech token，约 6.4 秒；超过上限会停止。")
+                        .font(.caption).foregroundStyle(.secondary)
+                    Button(generationRunning ? "生成中…" : "用当前文字生成 · CPU") { runGeneration(useText: true) }
+                        .disabled(!models.ready || generationRunning || probeRunning || memoryProbeRunning || text.isEmpty)
+                    Text("手机 LLM 先生成整句 token，释放后运行 Flow 与 HiFT；首次完整真机结果待验证。")
                         .font(.caption).foregroundStyle(.secondary)
                 }
                 Section("真机探针") {
@@ -54,6 +58,8 @@ struct ContentView: View {
                         .disabled(!models.ready || generationRunning || probeRunning || memoryProbeRunning)
                     Button("复现 CPU Low · 详细输出诊断") { runGeneration(lowPrecision: true) }
                         .disabled(!models.ready || generationRunning || probeRunning || memoryProbeRunning)
+                }
+                Section("生成结果") {
                     Text(generationResult).font(.caption).textSelection(.enabled)
                     let generationLog = CosyVoiceGenerate.generationLogPath()
                     if FileManager.default.fileExists(atPath: generationLog) {
@@ -61,6 +67,9 @@ struct ContentView: View {
                     }
                     let wavPath = CosyVoiceGenerate.generatedWavPath()
                     if FileManager.default.fileExists(atPath: wavPath) {
+                        Button("播放最近成功的生成 WAV") { playGeneratedWav() }
+                            .disabled(generationRunning)
+                        Button("停止试听") { wavPlayer?.stop() }
                         ShareLink("分享最近成功的生成 WAV", item: URL(fileURLWithPath: wavPath))
                     }
                     Text("若 App 退出，重开后分享 last-generation.log。旧 WAV 仅代表最近一次成功生成，不代表本次成功。")
@@ -134,12 +143,17 @@ struct ContentView: View {
         }
     }
 
-    private func runGeneration(lowPrecision: Bool = false) {
+    private func runGeneration(lowPrecision: Bool = false, useText: Bool = false) {
         let path = models.directory.path
+        let inputText = text
+        wavPlayer?.stop()
+        player.stop()
         generationRunning = true
         generationResult = "正在依次运行模型；若 App 退出，重开后分享生成日志…"
         DispatchQueue.global(qos: .userInitiated).async {
-            let result = CosyVoiceGenerate.runFixedTokenSample(atDirectory: path, lowPrecisionFlow: lowPrecision)
+            let result = useText
+                ? CosyVoiceGenerate.generateText(inputText, atDirectory: path)
+                : CosyVoiceGenerate.runFixedTokenSample(atDirectory: path, lowPrecisionFlow: lowPrecision)
             DispatchQueue.main.async {
                 generationRunning = false
                 let message = result["message"] as? String ?? "生成未返回结果"
@@ -147,6 +161,18 @@ struct ContentView: View {
                 let available = result["minAvailableMB"] as? Double ?? 0
                 generationResult = String(format: "%@；采样峰值 %.0f MB，最低可用 %.0f MB。", message, peak, available)
             }
+        }
+    }
+
+    private func playGeneratedWav() {
+        do {
+            player.stop()
+            try AVAudioSession.sharedInstance().setCategory(.playback, mode: .default)
+            try AVAudioSession.sharedInstance().setActive(true)
+            wavPlayer = try AVAudioPlayer(contentsOf: URL(fileURLWithPath: CosyVoiceGenerate.generatedWavPath()))
+            if wavPlayer?.play() != true { errorMessage = "无法播放生成的 WAV" }
+        } catch {
+            errorMessage = error.localizedDescription
         }
     }
 
