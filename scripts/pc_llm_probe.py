@@ -62,7 +62,10 @@ def main() -> int:
     ids = list(llm.tokenizer_encode(prompt))
     ids.extend(token + SPEECH_OFFSET for token in prompt_speech_tokens)
     encoded = time.perf_counter()
-    output_ids = list(llm.generate(ids))
+    # MNN 3.6.1 Python's Llm.generate(ids) omits its C++ max_tokens argument.
+    # The binding defaults it to 0, which performs prefill but no decode.
+    # This PC probe supplies the bound explicitly through the underlying binding.
+    output_ids = list(llm._c_obj.generate(ids, args.max_new_tokens))
     generated = time.perf_counter()
     context = llm.context
     speech_tokens = [token - SPEECH_OFFSET for token in output_ids if SPEECH_OFFSET <= token <= SPEECH_MAX]

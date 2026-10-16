@@ -20,12 +20,16 @@ HiFT 两个图经清单 SHA-256 验证后，使用 87 个合成目标 token 跑�
 
 完整 ZIP（1,399,083,563 B）已通过发布清单 SHA-256。ZIP 内 `flow.cfg-student-2step.batch1.fp16.mnn` 的实际 SHA-256 为 `B74ECE0A1A2E165EEF53DBC8D628310A1B464323D4729959069744BAECF418D7`，而 ZIP 内 `manifest.json` 和 Android 仓库清单均写 `C70084684EC71908C38FAD043B07534F3BCF1999810353361405A0564F14C1EC`。17 个必需文件中仅此一项不符；文件长度、ZIP CRC 与直接从源站 Range 重取的字节一致。`reports/zip-audit.json` 保存逐项结果；提取脚本只在完整 ZIP 哈希通过且显式指定例外时接受该实际图哈希。上述 Flow 合成 token 前向已通过，但仍需真实文字和听感验证。
 
-首次 LLM 测试曾因我方清单漏列 `llm_config.json` 出现 `/blocks.0/Reshape_output_0` 形状错误。该 456 B 文件已从完整 ZIP 提取并通过 SHA-256；补齐后形状错误消失，Windows MNN 3.6.1 Python 的 prefill 约 0.22–0.29 秒、输入 125 token，但 `generate()` 仍返回 0 个 token（`gen_seq_len=0`，decode 未执行），即使改用 greedy 采样亦然。单独 `forward()` 的 logits 形状为 1×1×158720，语音 token 区有有限且非零的高分值，说明图并非完全无法前向；尚不能判断是 Windows Python 绑定、采样路径还是模型兼容性问题。真实文字→speech token→WAV 尚未通过，不应把合成 token WAV 误称为文字朗读。
+首次 LLM 测试曾因我方清单漏列 `llm_config.json` 出现 `/blocks.0/Reshape_output_0` 形状错误。该 456 B 文件已从完整 ZIP 提取并通过 SHA-256；补齐后形状错误消失，但最初的 Python `generate()` 测试仍返回 0 个 token（`gen_seq_len=0`，decode 未执行）。单独 `forward()` 的 logits 形状为 1×1×158720，语音 token 区有有限且非零的高分值，促使我们继续检查生成接口；原因和修复见下。
+
+进一步核对 [MNN 3.6.1 Python 绑定](https://github.com/alibaba/MNN/blob/3.6.1/pymnn/src/llm.h) 与 [C++ 生成逻辑](https://github.com/alibaba/MNN/blob/3.6.1/transformers/llm/engine/src/llm.cpp) 后，确认 Python 包装层 `generate(ids)` 把底层 `max_tokens` 留在默认值 0；只有负值才会回退到配置文件的 `max_new_tokens`。测试脚本现显式调用底层绑定并传入上限 256。相同中文句“你好，欢迎来到离线语音测试。”生成 74 个有效 speech token、无非法 token，第 75 个为 EOS；LLM 总生成约 1.32 秒，其中 prefill 约 0.33 秒、decode 约 0.90 秒，记录于 `reports/pc-llm.json`。
+
+将这 74 个真实 LLM speech token 接入 Conditioner→两步 Flow→HiFT，Windows CPU 写出 `reports/pc-real-text.wav`：2.96 秒、峰值 0.722、RMS 0.091，Flow 约 12.38 秒、整体约 14.91 秒，记录于 `reports/pc-real-text.json`。这证明文件与数值链路跑通；**声音是否听得清、内容是否正确和自然仍需人工试听**。完整输出仍在 LLM 全句结束后才解码，尚非流式；此速度也不能外推 iPhone。
 
 ## 公开基线与待验证项
 
 - [官方 CosyVoice](https://github.com/QwenAudio/CosyVoice)：按 25 speech-token 左右的块加 lookahead/cache 进行流式语音合成。
 - [公开 CosyVoice3-MNN Android 工程](https://github.com/Nian27/CosyVoice3-MNN)：提供 MNN 模型包、LLM、Flow、HiFT 的全句合成实现，可参考导出方式和资产清单；现有流程先产生整句 token，不可直接当成真流式 iPhone 实现。
 - 当前公开 Flow MNN 图的输入是 `x / mask / mu / spks / cond / t`，未见官方流式 `flow_cache` 等状态输入。因此不能只把整句图按 25 token 多跑几次就宣称等价于官方流式；需在 PC 上验证缓存/重叠质量，必要时重新导出带状态的图。此项属于根据两份源码作出的工程判断。
-- Windows 未完成项：LLM 生成 speech token、真实文字 WAV、真实分块与全句数值/听感对照。整包审计、合成 token 的 Conditioner→Flow→HiFT 前向已完成。
+- Windows 未完成项：真实文字 WAV 的听感验收、真实分块与全句数值/听感对照。整包审计及一条完整文字→WAV 链路已完成。
 - iPhone 未完成项：完整 MNN 推理接线、编译与真机生成。

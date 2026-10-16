@@ -1,6 +1,6 @@
 # CosyVoice3 → MNN → iPhone
 
-**当前先在 Windows PC 验证模型。** 尚未跑通完整 CosyVoice 文字转语音；iPhone 工程只是后续移植骨架，不应当作已完成的端侧流式 TTS。ACE-Step 工程 `C:\ace-step-mnn-ios` 保留且不受本项目改动。
+**Windows PC 已完成一条真实文字→语音的 MNN 烟雾测试。** 听感与真流式尚未验收；iPhone 工程只是后续移植骨架，不应当作已完成的端侧流式 TTS。ACE-Step 工程 `C:\ace-step-mnn-ios` 保留且不受本项目改动。
 
 独立于 `C:\ace-step-mnn-ios` 的端侧流式语音合成工程。首选模型为公开的 **Fun-CosyVoice3-0.5B-2512**，运行时只使用 **MNN**；不调用云端 TTS，也不把 MLX 当作 iPhone 推理后端。
 
@@ -10,8 +10,8 @@
 - `试听播放链路` 只播放本地生成的测试音，不是 CosyVoice 推理。
 - `探测 Conditioner` 只验证一个 MNN 小图能在手机上加载、创建 CPU 会话。**完整的 LLM → Flow → HiFT 流式推理尚未接入**；界面会明确标记“未接通”，不会把预生成音频冒充端侧推理。
 - Windows 不能编译 iOS App；仓库内的 GitHub Actions 流程用于 macOS 云端 unsigned IPA 构建。尚无真机运行结论。
-- Windows CPU 已用合成 speech token 跑通 Conditioner→Flow→HiFT，写出 3.48 秒测试 WAV；**LLM 文字→speech token 与真实文字朗读仍未验证**，详见 [PC 验证记录](docs/plan.md)。
-- 1.40 GB 发布 ZIP 的整包 SHA-256 已通过；17 个必需文件中 16 个与上游清单匹配，Flow 图存在已记录的清单哈希差异。补齐遗漏的 `llm_config.json` 后，Windows MNN Python 的 LLM 前向不再报形状错误，但 `generate()` 仍返回 0 个 token，不能宣称 PC 全链路通过。
+- Windows CPU 已跑通 LLM→Conditioner→Flow→HiFT：固定中文测试句生成 74 个有效 speech token、正常 EOS，并写出 2.96 秒 WAV；**是否清晰、自然仍需试听确认，且不是流式**。详见 [PC 验证记录](docs/plan.md)。
+- 1.40 GB 发布 ZIP 的整包 SHA-256 已通过；17 个必需文件中 16 个与上游清单匹配，Flow 图存在已记录的清单哈希差异。MNN 3.6.1 Python 包装层生成接口默认只做 prefill；PC 测试脚本显式传入最大 token 数后才获得有效输出。
 
 ## 技术选择
 
@@ -27,6 +27,8 @@ python scripts/audit_zip.py downloads/cosyvoice3-mnn-mobile-fp16-complete.zip
 python scripts/extract_model.py downloads/cosyvoice3-mnn-mobile-fp16-complete.zip --accept-known-flow-graph-mismatch
 python scripts/verify_model.py models/CosyVoice3 --sha256 --accept-known-flow-graph-mismatch
 C:\ace-step-mnn-ios\.venv\Scripts\python.exe scripts/pc_probe.py models/CosyVoice3 --target-tokens 25
+C:\ace-step-mnn-ios\.venv\Scripts\python.exe scripts/pc_llm_probe.py models/CosyVoice3 --max-new-tokens 256 --output reports/pc-llm.json --tokens-output reports/pc-speech-tokens.csv
+C:\ace-step-mnn-ios\.venv\Scripts\python.exe scripts/pc_flow_hift_probe.py models/CosyVoice3 reports/pc-speech-tokens.csv reports/pc-real-text.wav --report reports/pc-real-text.json
 ```
 
 `audit_zip.py` 会因那一个 Flow 图哈希差异返回非零码；只有整包发布 SHA-256 已通过、审计报告确认仅该差异时，才使用显式例外标志。将来部署到 iPhone 时，可把提取的 `models/CosyVoice3/` 文件通过 Apple Devices 文件共享导入 App。这个 Android 包以 MNN 3.6.1 制作，只是 iOS 兼容性候选，尚未证明其中每个图都能在 iPhone/Metal 上运行，更未证明它们能分块流式运行。不要直接按 Android 的 0.79–0.96 RTF 估算 iPhone 速度。
