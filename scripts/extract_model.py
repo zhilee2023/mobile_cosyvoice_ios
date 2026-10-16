@@ -1,4 +1,4 @@
-"""Safely extract the 16 required model files and verify the public hashes."""
+"""Safely extract the required model files and verify their hashes."""
 
 import argparse
 import hashlib

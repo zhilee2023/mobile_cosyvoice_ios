@@ -24,6 +24,7 @@ def main() -> int:
     parser.add_argument("model_dir", type=Path)
     parser.add_argument("--text", default="你好，欢迎来到离线语音测试。")
     parser.add_argument("--max-new-tokens", type=int, default=64)
+    parser.add_argument("--sampler", choices=("mixed", "greedy", "cosyvoice_ras"), default="mixed")
     parser.add_argument("--output", type=Path)
     parser.add_argument("--tokens-output", type=Path)
     args = parser.parse_args()
@@ -33,7 +34,7 @@ def main() -> int:
     import MNN.llm as mllm
 
     model_dir = args.model_dir.resolve()
-    required = ("config-cpu-cosyvoice-ras.json", "llm.mnn", "llm.mnn.weight", "embeddings_bf16.bin", "tokenizer.mtok", "prompt-speech-tokens.csv")
+    required = ("config-cpu-cosyvoice-ras.json", "llm_config.json", "llm.mnn", "llm.mnn.weight", "embeddings_bf16.bin", "tokenizer.mtok", "prompt-speech-tokens.csv")
     missing = [name for name in required if not (model_dir / name).is_file()]
     if missing:
         parser.error("Missing model files: " + ", ".join(missing))
@@ -41,7 +42,7 @@ def main() -> int:
     config_source = json.loads((model_dir / "config-cpu-cosyvoice-ras.json").read_text(encoding="utf-8"))
     # The public Android runtime now uses a mixed sampler with explicit
     # repetition penalty; the packaged static config still says cosyvoice_ras.
-    config_source.update({"sampler_type": "mixed", "mixed_samplers": ["penalty", "topK", "topP", "temperature"],
+    config_source.update({"sampler_type": args.sampler, "mixed_samplers": ["penalty", "topK", "topP", "temperature"],
                           "repetition_penalty": 1.15, "max_new_tokens": args.max_new_tokens})
     config = model_dir / "config-pc-runtime.json"
     config.write_text(json.dumps(config_source, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
@@ -63,6 +64,7 @@ def main() -> int:
     encoded = time.perf_counter()
     output_ids = list(llm.generate(ids))
     generated = time.perf_counter()
+    context = llm.context
     speech_tokens = [token - SPEECH_OFFSET for token in output_ids if SPEECH_OFFSET <= token <= SPEECH_MAX]
     invalid = [token for token in output_ids if not SPEECH_OFFSET <= token <= SPEECH_MAX and token != SPEECH_EOS]
     report = {
@@ -78,6 +80,11 @@ def main() -> int:
         "generate_seconds": round(generated - encoded, 4),
         "first_16_raw_output_ids": output_ids[:16],
         "first_16_speech_tokens": speech_tokens[:16],
+        "mnn_prompt_len": context.prompt_len,
+        "mnn_generated_len": context.gen_seq_len,
+        "mnn_prefill_seconds": round(context.prefill_us / 1_000_000, 4),
+        "mnn_decode_seconds": round(context.decode_us / 1_000_000, 4),
+        "mnn_status": context.status,
         "scope_note": "No Flow, HiFT, audio, or streaming validation yet",
     }
     result = json.dumps(report, ensure_ascii=False, indent=2)
