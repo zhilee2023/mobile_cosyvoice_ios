@@ -8,6 +8,8 @@ struct ContentView: View {
     @State private var probeRunning = false
     @State private var memoryProbeResult = "尚未测试大型模型内存"
     @State private var memoryProbeRunning = false
+    @State private var generationRunning = false
+    @State private var generationResult = "尚未运行手机模型生成"
     @State private var demoRunning = false
     @State private var firstChunkMilliseconds: Int?
     @State private var errorMessage: String?
@@ -17,7 +19,7 @@ struct ContentView: View {
             Form {
                 Section("项目状态") {
                     Label("MNN / iPhone 15 · 端侧", systemImage: "iphone")
-                    Text("完整 CosyVoice 推理尚未接通；当前可验证模型文件、MNN 会话和流式音频播放。")
+                    Text("可测固定 speech token → 1 秒端侧语音；手机文字 LLM 和连续流式生成尚未接通。")
                         .foregroundStyle(.secondary)
                 }
                 Section("模型") {
@@ -40,16 +42,33 @@ struct ContentView: View {
                 }
                 Section("真机探针") {
                     Button("探测 Conditioner MNN 会话") { runProbe() }
-                        .disabled(!models.ready || probeRunning || memoryProbeRunning)
+                        .disabled(!models.ready || probeRunning || memoryProbeRunning || generationRunning)
                     Text(probeResult).font(.caption).textSelection(.enabled)
+                }
+                Section("端侧生成试验 · 固定 speech token") {
+                    Text("用 PC 文字模型预生成的 25 个 token，在本机运行 Conditioner → 256 帧 Flow → HiFT，生成约 1 秒 WAV。不会使用上方输入文字；内存不足会停止。")
+                        .font(.caption).foregroundStyle(.secondary)
+                    Button(generationRunning ? "生成与记录中…" : "生成 1 秒固定样例并记录日志") { runGeneration() }
+                        .disabled(!models.ready || generationRunning || probeRunning || memoryProbeRunning)
+                    Text(generationResult).font(.caption).textSelection(.enabled)
+                    let generationLog = CosyVoiceGenerate.generationLogPath()
+                    if FileManager.default.fileExists(atPath: generationLog) {
+                        ShareLink("分享生成日志", item: URL(fileURLWithPath: generationLog))
+                    }
+                    let wavPath = CosyVoiceGenerate.generatedWavPath()
+                    if FileManager.default.fileExists(atPath: wavPath) {
+                        ShareLink("分享最近成功的生成 WAV", item: URL(fileURLWithPath: wavPath))
+                    }
+                    Text("若 App 退出，重开后分享 last-generation.log。旧 WAV 仅代表最近一次成功生成，不代表本次成功。")
+                        .font(.caption).foregroundStyle(.secondary)
                 }
                 Section("大模型内存试验") {
                     Text("逐项运行，不同时常驻。只创建并调整会话形状，不运行前向；即使通过，也不能证明完整生成不会超内存。")
                         .font(.caption).foregroundStyle(.secondary)
                     Button("测 Flow · Metal High · 256 帧") { runMemoryProbe(flow: true) }
-                        .disabled(!models.ready || probeRunning || memoryProbeRunning)
+                        .disabled(!models.ready || probeRunning || memoryProbeRunning || generationRunning)
                     Button("测 HiFT core · CPU Low · 160 帧") { runMemoryProbe(flow: false) }
-                        .disabled(!models.ready || probeRunning || memoryProbeRunning)
+                        .disabled(!models.ready || probeRunning || memoryProbeRunning || generationRunning)
                     Text(memoryProbeResult).font(.caption).textSelection(.enabled)
                     let logPath = MNNProbe.memoryProbeLogPath()
                     if FileManager.default.fileExists(atPath: logPath) {
@@ -62,7 +81,7 @@ struct ContentView: View {
                     Button(demoRunning ? "播放自测中…" : "试听播放链路自测（非模型）") {
                         Task { await playDemoChunks() }
                     }
-                    .disabled(demoRunning)
+                    .disabled(demoRunning || generationRunning)
                     Button("停止播放") { player.stop() }
                     Text("\(player.status) · 队列 \(player.queuedSeconds, specifier: "%.2f") 秒")
                     if let firstChunkMilliseconds {
@@ -101,6 +120,22 @@ struct ContentView: View {
                 } else {
                     probeResult = result["message"] as? String ?? "MNN 探针失败"
                 }
+            }
+        }
+    }
+
+    private func runGeneration() {
+        let path = models.directory.path
+        generationRunning = true
+        generationResult = "正在依次运行模型；若 App 退出，重开后分享生成日志…"
+        DispatchQueue.global(qos: .userInitiated).async {
+            let result = CosyVoiceGenerate.runFixedTokenSample(atDirectory: path)
+            DispatchQueue.main.async {
+                generationRunning = false
+                let message = result["message"] as? String ?? "生成未返回结果"
+                let peak = result["peakFootprintMB"] as? Double ?? 0
+                let available = result["minAvailableMB"] as? Double ?? 0
+                generationResult = String(format: "%@；采样峰值 %.0f MB，最低可用 %.0f MB。", message, peak, available)
             }
         }
     }

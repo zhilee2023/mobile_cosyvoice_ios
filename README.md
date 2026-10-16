@@ -1,6 +1,6 @@
 # CosyVoice3 → MNN → iPhone
 
-**Windows PC 已完成一条真实文字→语音的 MNN 烟雾测试。** 听感与真流式尚未验收；iPhone 工程只是后续移植骨架，不应当作已完成的端侧流式 TTS。ACE-Step 工程 `C:\ace-step-mnn-ios` 保留且不受本项目改动。
+**Windows PC 已完成真实文字→语音的 MNN 烟雾测试。** iPhone v0.3.0 新增固定 speech token→约 1 秒 WAV 的端侧生成实验；手机文字 LLM、连续分块和真流式尚未接通。ACE-Step 工程 `C:\ace-step-mnn-ios` 保留且不受本项目改动。
 
 独立于 `C:\ace-step-mnn-ios` 的端侧流式语音合成工程。首选模型为公开的 **Fun-CosyVoice3-0.5B-2512**，运行时只使用 **MNN**；不调用云端 TTS，也不把 MLX 当作 iPhone 推理后端。
 
@@ -8,8 +8,9 @@
 
 - 已搭建 iOS 17+ SwiftUI 应用、MNN C++ 桥、模型文件检查、24 kHz 单声道分块播放与首包/RTF 指标框架。
 - `试听播放链路` 只播放本地生成的测试音，不是 CosyVoice 推理。
-- `探测 Conditioner` 只验证一个 MNN 小图能在手机上加载、创建 CPU 会话。v0.2.1 改为 Flow Metal High（256 帧）与 HiFT core CPU Low（160 帧）的**单独会话创建/resize 内存试验**；不执行前向，采样峰值是下界。此前 512 帧 Flow 真机 resize 占 2,957 MB、仅余 264 MB，因此不再提供 512 帧按钮。试验前后记录 `phys_footprint`、`os_proc_available_memory()` 到 App 文件共享区的 `last-memory-probe.log`，若中途被系统终止，可重开 App 分享最后检查点。**完整的 LLM → Flow → HiFT 流式推理尚未接入**；界面会明确标记“未接通”，不会把预生成音频冒充端侧推理。
-- Windows 不能编译 iOS App；仓库内的 GitHub Actions 流程用于 macOS 云端 unsigned IPA 构建。尚无真机运行结论。
+- `探测 Conditioner` 只验证一个 MNN 小图能在手机上加载、创建 CPU 会话。Flow Metal High（256 帧）与 HiFT core CPU Low（160 帧）的单独会话内存试验只做创建/resize。此前 512 帧 Flow 真机 resize 占 2,957 MB、仅余 264 MB，因此不再提供 512 帧按钮。日志保存在文件共享区 `last-memory-probe.log`。
+- v0.3.0 的“生成 1 秒固定样例”使用 PC 文字模型已生成的 25 个真实 speech token，在 iPhone 上执行 Conditioner CPU → 两步 Flow Metal High（224 有效帧、256 帧图）→ HiFT F0/core CPU → 24 kHz WAV。逐阶段记录耗时和可用内存到 `last-generation.log`，成功后生成 `last-generated.wav`。Flow resize 后可用内存低于 650 MB、第一步后低于 500 MB 等情况会提前停止；真机仍可能因未采样到的内存峰值被系统终止。**它不运行手机文字 LLM，也不是真流式**。若 App 退出，重开后分享日志；旧 WAV 不代表本次成功。
+- Windows 不能编译 iOS App；仓库内的 GitHub Actions 流程用于 macOS 云端 unsigned IPA 构建。新生成实验需要真机日志验收，云端编译成功不等于手机生成成功。
 - Windows CPU 已跑通 LLM→Conditioner→Flow→HiFT：固定中文测试句生成 74 个有效 speech token、正常 EOS，并写出 2.96 秒 WAV；**是否清晰、自然仍需试听确认，且不是流式**。详见 [PC 验证记录](docs/plan.md)。
 - 1.40 GB 发布 ZIP 的整包 SHA-256 已通过；17 个必需文件中 16 个与上游清单匹配，Flow 图存在已记录的清单哈希差异。MNN 3.6.1 Python 包装层生成接口默认只做 prefill；PC 测试脚本显式传入最大 token 数后才获得有效输出。
 

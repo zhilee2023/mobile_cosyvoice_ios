@@ -215,6 +215,8 @@ def main() -> int:
     parser.add_argument("target_tokens_csv", type=Path)
     parser.add_argument("output_wav", type=Path)
     parser.add_argument("--report", type=Path)
+    parser.add_argument("--hift-core-model", type=Path,
+                        help="Optional HiFT core candidate; the default is the published FP32 model")
     args = parser.parse_args()
     model_dir = args.model_dir.resolve()
     prompt = csv_tokens(model_dir / "prompt-speech-tokens.csv")
@@ -228,7 +230,10 @@ def main() -> int:
     print(f"Conditioner: {conditioner_seconds:.3f}s; frames={mu.shape[1]}", flush=True)
     mel, flow_seconds = flow(model_dir, mu)
     print(f"Flow: {flow_seconds:.3f}s; target frames={mel.shape[1]}", flush=True)
-    pcm, hift_times = hift(model_dir, mel)
+    core_model = args.hift_core_model.resolve() if args.hift_core_model else None
+    if core_model and not core_model.is_file():
+        parser.error(f"HiFT core model does not exist: {core_model}")
+    pcm, hift_times = hift(model_dir, mel, core_model_path=core_model)
     duration = len(pcm) / SAMPLE_RATE
     peak = float(np.max(np.abs(pcm)))
     rms = float(np.sqrt(np.mean(pcm.astype(np.float64) ** 2)))
@@ -246,6 +251,7 @@ def main() -> int:
               "conditioner_seconds": conditioner_seconds, "flow_seconds": flow_seconds, **hift_times,
               "total_seconds": time.perf_counter() - started, "pcm_peak_before_normalization": peak,
               "pcm_rms": rms, "output_wav": str(args.output_wav.resolve()),
+              "hift_core_model": str(core_model or (model_dir / "hift-core.fp32.mnn")),
               "scope_note": "Token source determines whether this is real TTS; not yet a streaming test"}
     if args.report:
         args.report.parent.mkdir(parents=True, exist_ok=True)
