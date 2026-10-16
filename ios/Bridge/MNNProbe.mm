@@ -77,10 +77,16 @@ bool setInputShape(MNN::Interpreter *interpreter, MNN::Session *session,
     return true;
 }
 
-NSDictionary<NSString *, id> *probeLargeSession(NSString *directory, bool flow) {
+enum class ProbeMode { flowMetal, flowMetalNoTune, flowCPU, hiftCPU };
+
+NSDictionary<NSString *, id> *probeLargeSession(NSString *directory, ProbeMode mode) {
     @autoreleasepool {
         ProbeStats stats;
-        NSString *label = flow ? @"Flow Metal High / 256 帧" : @"HiFT core CPU Low / 160 帧";
+        const bool flow = mode != ProbeMode::hiftCPU;
+        const bool metal = mode == ProbeMode::flowMetal || mode == ProbeMode::flowMetalNoTune;
+        NSString *label = mode == ProbeMode::flowMetal ? @"Flow Metal High / 256 帧" :
+            mode == ProbeMode::flowMetalNoTune ? @"Flow Metal High NoTune / 256 帧" :
+            mode == ProbeMode::flowCPU ? @"Flow CPU Low / 256 帧" : @"HiFT core CPU Low / 160 帧";
         checkpoint(stats, [@"开始：" stringByAppendingString:label], true);
         NSString *file = flow ? @"flow.cfg-student-2step.batch1.fp16.mnn" : @"hift-core.fp32.mnn";
         NSString *path = [directory stringByAppendingPathComponent:file];
@@ -108,18 +114,20 @@ NSDictionary<NSString *, id> *probeLargeSession(NSString *directory, bool flow) 
         checkpoint(stats, @"图已读取；开始创建会话");
 
         MNN::BackendConfig backend;
-        backend.precision = flow ? MNN::BackendConfig::Precision_High : MNN::BackendConfig::Precision_Low;
+        backend.precision = metal ? MNN::BackendConfig::Precision_High : MNN::BackendConfig::Precision_Low;
         backend.memory = MNN::BackendConfig::Memory_Low;
         MNN::ScheduleConfig config;
-        config.type = flow ? MNN_FORWARD_METAL : MNN_FORWARD_CPU;
-        config.numThread = flow ? 1 : 4;
+        config.type = metal ? MNN_FORWARD_METAL : MNN_FORWARD_CPU;
+        config.backupType = MNN_FORWARD_CPU;
+        config.numThread = metal ? 1 : 4;
+        if (mode == ProbeMode::flowMetalNoTune) config.mode = MNN_GPU_TUNING_NONE;
         config.backendConfig = &backend;
         MNN::Session *session = interpreter->createSession(config);
         if (!session) {
             checkpoint(stats, @"停止：会话创建失败");
             return probeResult(false, @"MNN 会话创建失败；详见内存日志", stats);
         }
-        checkpoint(stats, @"会话已创建；开始设置真实测试形状");
+        checkpoint(stats, [@"会话已创建；开始设置真实测试形状：" stringByAppendingString:label]);
 
         bool shapesOK = flow
             ? setInputShape(interpreter.get(), session, "x", {1, 80, 256})
@@ -154,11 +162,19 @@ NSDictionary<NSString *, id> *probeLargeSession(NSString *directory, bool flow) 
 + (NSString *)memoryProbeLogPath { return probeLogPath(); }
 
 + (NSDictionary<NSString *, id> *)probeFlowMetalMemoryAtDirectory:(NSString *)directory {
-    return probeLargeSession(directory, true);
+    return probeLargeSession(directory, ProbeMode::flowMetal);
+}
+
++ (NSDictionary<NSString *, id> *)probeFlowMetalNoTuneMemoryAtDirectory:(NSString *)directory {
+    return probeLargeSession(directory, ProbeMode::flowMetalNoTune);
+}
+
++ (NSDictionary<NSString *, id> *)probeFlowCPULowMemoryAtDirectory:(NSString *)directory {
+    return probeLargeSession(directory, ProbeMode::flowCPU);
 }
 
 + (NSDictionary<NSString *, id> *)probeHiFTCPUMemoryAtDirectory:(NSString *)directory {
-    return probeLargeSession(directory, false);
+    return probeLargeSession(directory, ProbeMode::hiftCPU);
 }
 
 + (NSDictionary<NSString *, id> *)probeConditionerAtDirectory:(NSString *)directory {

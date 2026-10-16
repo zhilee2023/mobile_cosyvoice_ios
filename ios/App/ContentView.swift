@@ -63,11 +63,15 @@ struct ContentView: View {
                         .font(.caption).foregroundStyle(.secondary)
                 }
                 Section("大模型内存试验") {
-                    Text("逐项运行，不同时常驻。只创建并调整会话形状，不运行前向；即使通过，也不能证明完整生成不会超内存。")
+                    Text("逐项运行；每项结束后分享日志，再重开 App 测下一项。只创建并调整会话形状，不运行前向；通过不代表生成安全。")
                         .font(.caption).foregroundStyle(.secondary)
-                    Button("测 Flow · Metal High · 256 帧") { runMemoryProbe(flow: true) }
+                    Button("测 Flow · Metal High · 256 帧（基线）") { runMemoryProbe(mode: 0) }
                         .disabled(!models.ready || probeRunning || memoryProbeRunning || generationRunning)
-                    Button("测 HiFT core · CPU Low · 160 帧") { runMemoryProbe(flow: false) }
+                    Button("测 Flow · Metal NoTune · 256 帧") { runMemoryProbe(mode: 1) }
+                        .disabled(!models.ready || probeRunning || memoryProbeRunning || generationRunning)
+                    Button("测 Flow · CPU Low · 256 帧") { runMemoryProbe(mode: 2) }
+                        .disabled(!models.ready || probeRunning || memoryProbeRunning || generationRunning)
+                    Button("测 HiFT core · CPU Low · 160 帧") { runMemoryProbe(mode: 3) }
                         .disabled(!models.ready || probeRunning || memoryProbeRunning || generationRunning)
                     Text(memoryProbeResult).font(.caption).textSelection(.enabled)
                     let logPath = MNNProbe.memoryProbeLogPath()
@@ -140,14 +144,18 @@ struct ContentView: View {
         }
     }
 
-    private func runMemoryProbe(flow: Bool) {
+    private func runMemoryProbe(mode: Int) {
         let path = models.directory.path
         memoryProbeRunning = true
-        memoryProbeResult = flow ? "正在创建 Flow Metal 会话…" : "正在创建 HiFT CPU 会话…"
+        memoryProbeResult = "正在创建模型会话；请保持 App 在前台…"
         DispatchQueue.global(qos: .userInitiated).async {
-            let result = flow
-                ? MNNProbe.probeFlowMetalMemory(atDirectory: path)
-                : MNNProbe.probeHiFTCPUMemory(atDirectory: path)
+            let result: [String: Any]
+            switch mode {
+            case 1: result = MNNProbe.probeFlowMetalNoTuneMemory(atDirectory: path)
+            case 2: result = MNNProbe.probeFlowCPULowMemory(atDirectory: path)
+            case 3: result = MNNProbe.probeHiFTCPUMemory(atDirectory: path)
+            default: result = MNNProbe.probeFlowMetalMemory(atDirectory: path)
+            }
             DispatchQueue.main.async {
                 memoryProbeRunning = false
                 let peak = result["peakFootprintMB"] as? Double ?? 0
