@@ -167,7 +167,7 @@ def istft(spectral: np.ndarray) -> np.ndarray:
     return np.clip(accumulated[FFT_SIZE // 2:FFT_SIZE // 2 + (frames - 1) * FFT_HOP], -0.99, 0.99).astype(np.float32)
 
 
-def hift(model_dir: Path, mel: np.ndarray) -> tuple[np.ndarray, dict]:
+def hift(model_dir: Path, mel: np.ndarray, core_model_path: Path | None = None) -> tuple[np.ndarray, dict]:
     frames = mel.shape[1]
     shaped_mel = mel.reshape(1, 80, frames)
     f0_network, f0_session = model_session(model_dir / "hift-f0.fp32.mnn")
@@ -188,7 +188,7 @@ def hift(model_dir: Path, mel: np.ndarray) -> tuple[np.ndarray, dict]:
     stft_seconds = time.perf_counter() - start
     finite("HiFT source STFT", source_stft)
 
-    core_network, core_session = model_session(model_dir / "hift-core.fp32.mnn")
+    core_network, core_session = model_session(core_model_path or model_dir / "hift-core.fp32.mnn")
     for name, shape in (("mel", shaped_mel.shape), ("source_stft", source_stft.shape)):
         core_network.resizeTensor(core_network.getSessionInput(core_session, name), tuple(shape))
     core_network.resizeSession(core_session)
