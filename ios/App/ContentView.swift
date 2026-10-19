@@ -7,7 +7,7 @@ struct ContentView: View {
     @StateObject private var sentences = SentenceStream()
     @StateObject private var experiments = ExperimentRunner()
     @State private var text = "你好，欢迎来到离线语音测试。我们正在测试按句生成和播放。希望每一句都清晰自然。"
-    @State private var threads = 4
+    private let threads = ExperimentCatalog.defaultThreads
     @State private var lowHiFT = true
     @State private var singleRunning = false
     @State private var generationResult = "尚未生成"
@@ -41,15 +41,10 @@ struct ContentView: View {
                     Toggle("HiFT core Low", isOn: $lowHiFT).disabled(busy)
                     Text("已试听选择Low；F0、Flow仍High，Flow两步。关闭可对照High。")
                         .font(.caption).foregroundStyle(.secondary)
-                    Picker("串行 CPU 线程", selection: $threads) {
-                        Text("2").tag(2); Text("3").tag(3); Text("4 · 基线").tag(4)
-                    }.disabled(busy)
-                    Button("按句生成与播放 · 串行基线") { startSentences(adaptive: false) }
-                        .disabled(!models.ready || busy || text.isEmpty)
-                    Button("按句生成 · 自适应常驻 / 串行回退") { startSentences(adaptive: true) }
-                        .disabled(!models.ready || busy || text.isEmpty)
-                    Text("自适应入口固定4线程：最多保留一套384帧Flow；LLM加载前余量不足1800 MB就释放Flow，本批剩余句改串行。800 MB底线不变。初始化、等待和失败重试均计入耗时，是否更快需实测。")
+                    Text("当前配置：LLM / Flow / HiFT 均4线程；Flow CPU High两步，F0 High。")
                         .font(.caption).foregroundStyle(.secondary)
+                    Button("按句生成与播放") { startSentences() }
+                        .disabled(!models.ready || busy || text.isEmpty)
                     Button("只生成当前短句 WAV") { generateSingle() }
                         .disabled(!models.ready || busy || text.isEmpty || text.utf16.count > 40)
                     Button("停止句级生成") { sentences.stop() }.disabled(!sentences.isRunning)
@@ -60,25 +55,25 @@ struct ContentView: View {
                         .font(.caption).foregroundStyle(.secondary)
                     Text(generationResult).font(.caption).textSelection(.enabled)
                 }
-                Section("加速实验室 · 分模块测试") {
-                    Text("固定同输入对照；每组只保留一个声学会话，记录首次 / 预热、偏差、20ms内存采样。结果不自动替换默认配置，也不是整链RTF。建议分别冷启动测试；连续运行若内存未恢复会记录未运行。")
-                        .font(.caption).foregroundStyle(.secondary)
+                if !ExperimentRunner.routes.isEmpty {
+                  Section("待验证实验 · 分模块测试") {
                     ForEach(ExperimentRunner.routes, id: \.id) { route in
                         Button(route.title) { startExperiments([route.id]) }
                             .disabled(!models.ready || busy)
                     }
-                    Text("Flow线程请先单独测②a，再分别冷启动测②b／②c，避免上一组残留拦住下一组。统一报告会保留三组实际Mel供跨组核对；单组通过不等于线程间已一致。")
-                        .font(.caption).foregroundStyle(.secondary)
-                    Button("依次运行其他路线（不含Flow独立线程）") {
-                        startExperiments(ExperimentRunner.routes.filter { !$0.id.hasPrefix("flow-thread-") }.map(\.id))
-                    }
-                        .disabled(!models.ready || busy)
                     Button("当前路线返回后停止") { experiments.stop() }
                         .disabled(!experiments.isRunning)
                     Text(experiments.status).font(.caption).textSelection(.enabled)
-                    Text("BF16是隔离候选，不能保证支持、提速或无NaN；报告区分精度请求与主后端，不声称全图BF16。LLM复用只测实例复用＋逐句reset KV，不保留跨句KV，也未让所有模型同时常驻。")
+                  }
+                }
+                Section("下一步优化 · 尚未接通") {
+                    ForEach(ExperimentCatalog.planned, id: \.id) { route in
+                        Text(route.title)
+                        Text(route.conclusion).font(.caption).foregroundStyle(.secondary)
+                    }
+                    Text("先验证完整EOS＋HiFT时的真实共驻内存，再做长文；20ms采样最低余量800 MB不降低。若共驻不够，改有限句段分阶段调度，不堆多套模型。")
                         .font(.caption).foregroundStyle(.secondary)
-                    Text("W8：待补原始学生模型/导出链；当前没有可验收的Flow W8文件。不会把改文件名或FP16重新转换算成W8。")
+                    Text("后续才测唯一小尺寸Flow复用、首句短/后句较长的调度。真token流式需匹配lookahead/cache/finalize导出；当前仍是句级播放。此版仅整理界面与结论，不宣称RTF已降低。")
                         .font(.caption).foregroundStyle(.secondary)
                 }
                 Section("统一测试报告 · 只发这一个") {
@@ -97,11 +92,19 @@ struct ContentView: View {
                         ShareLink("分享最近完整长文", item: SentenceStream.audioURL).disabled(busy)
                     }
                     Button("停止试听") { wavPlayer?.stop(); if !busy { player.stop() } }
-                    Text("旧WAV只代表最近成功记录。失败时partial保留，但不标成完整长文；分享汇总与各句诊断才能核对实际路线和RTF。")
+                    Text("旧WAV只代表最近成功记录。失败时partial保留，不标成完整长文；只需分享一个统一测试报告核对实际路线和RTF。")
                         .font(.caption).foregroundStyle(.secondary)
                 }
                 Section("已归档，不再占用测试按钮") {
-                    Text("Conditioner加载、固定1秒样例、播放音、Metal内存/NoTune、Flow CPU Low NaN、HiFT High/Low、两token共驻探针已移除入口。原实现和日志保留，不再重复运行已有结论的项目。")
+                    DisclosureGroup("查看已有结论（无需重测）") {
+                        ForEach(ExperimentCatalog.archived, id: \.id) { route in
+                            Text(route.title).font(.subheadline)
+                            Text(route.conclusion).font(.caption).foregroundStyle(.secondary)
+                        }
+                    }
+                    Text("已确认的实验只留结论，不留运行按钮；后续只显示已实现、待验证的新路线。一次通过不自动代表音质或长文验收。历史报告与原实现保留，原有20次/8 MB保留策略不变。")
+                        .font(.caption).foregroundStyle(.secondary)
+                    Text("更早的加载/固定样例、Metal/NoTune、Flow Low、HiFT精度、短KV共驻探针继续归档。")
                         .font(.caption).foregroundStyle(.secondary)
                     Text("17个模型文件不变，ACE项目未改动。使用Windows文件共享导入解压后的文件，不导入ZIP。")
                         .font(.caption).foregroundStyle(.secondary)
@@ -121,10 +124,10 @@ struct ContentView: View {
         }
     }
     private func exists(_ url: URL) -> Bool { FileManager.default.fileExists(atPath: url.path) }
-    private func startSentences(adaptive: Bool) {
+    private func startSentences() {
         wavPlayer?.stop()
         sentences.start(text: text, directory: models.directory.path, optimized: true,
-                        threads: adaptive ? 4 : threads, player: player, resident: adaptive, lowHiFT: lowHiFT)
+                        threads: threads, player: player, resident: false, lowHiFT: lowHiFT)
     }
     private func startExperiments(_ routes: [String]) {
         wavPlayer?.stop(); player.stop()

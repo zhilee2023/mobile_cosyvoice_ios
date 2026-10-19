@@ -3,19 +3,14 @@ import Combine
 
 @MainActor
 final class ExperimentRunner: ObservableObject {
-    static let routes: [(id: String, title: String)] = [
-        ("flow-buckets", "① Flow：384 / 352 / 320帧"),
-        ("flow-thread-4", "②a Flow High：仅4线程（冷启动测）"),
-        ("flow-thread-2", "②b Flow High：仅2线程（冷启动测）"),
-        ("flow-thread-3", "②c Flow High：仅3线程（冷启动测）"),
-        ("llm-reuse", "③ LLM：独立 / 复用实例，逐句reset KV"),
-        ("llm-threads", "④ LLM：4 / 2 / 3线程"),
-        ("hift-threads", "⑤ HiFT Low：4 / 2 / 3线程"),
-        ("flow-bf16", "⑥ Flow：High / BF16候选")
-    ]
+    // Only reviewed, implemented, unresolved routes get runnable buttons.
+    // Historical implementations stay in the bridge; archived IDs cannot run here.
+    static var routes: [(id: String, title: String)] {
+        ExperimentCatalog.available.map { (id: $0.id, title: $0.title) }
+    }
     static var summaryURL: URL { SentenceStream.documents.appendingPathComponent("last-experiment-summary.log") }
     @Published private(set) var isRunning = false
-    @Published private(set) var status = "尚未开始新路线；旧结论不会自动沿用为新配置通过。"
+    @Published private(set) var status = "已有结论的路线已归档；新路线接通后才会显示按钮。"
     private var stopRequested = false
     private let worker = DispatchQueue(label: "cosyvoice.isolated.experiments", qos: .userInitiated)
     func start(routes: [String], directory: String) {
