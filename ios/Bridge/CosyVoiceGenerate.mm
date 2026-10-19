@@ -124,7 +124,16 @@ struct MemorySampler {
     ~MemorySampler() { running=false; if(worker.joinable())worker.join(); }
 };
 NSDictionary<NSString *, id> *result(bool ok, NSString *message, Trace &trace) {
-    if (trace.sampler) trace.sampler->stop(trace);
+    if (trace.sampler) {
+        trace.sampler->stop(trace);
+        // Validate again AFTER the final sample; a late dip must not escape
+        // through a successful return between the last phase check and stop.
+        if (ok && !CosyVoiceBudget::accepts(os_proc_available_memory(),trace.sampler->available.load())) {
+            ok = false;
+            message = @"最终内存采样低于800 MB保护门槛，本次不计成功；请分享日志";
+            trace.record(message);
+        }
+    }
     return @{@"success": @(ok), @"message": message, @"peakFootprintMB": @(trace.peakMB),
              @"minAvailableMB": @(trace.minAvailableMB), @"logPath": documentPath(trace.fileName),
              @"wavPath": documentPath(@"last-generated.wav")};
