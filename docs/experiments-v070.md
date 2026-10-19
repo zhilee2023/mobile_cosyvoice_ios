@@ -70,3 +70,15 @@ generation toggle; new Low thread sweep is a different question.
 Borrowed Android lifetime/reset structure, not its OpenCL/Hexagon backend or RAM
 assumptions. Three repeated requests are a microbenchmark, not a minute-long
 resident stress acceptance. No claim of RTF<1 or true token-streaming is made.
+
+## Local regression evidence (2026-10-19)
+
+- `pc_v070_routes_check.py`: same70 tokens, Mel L2 vs384 =3.03195e-5
+  (352),2.61980e-5 (320); six independent/reset requests produced identical42
+  speech tokens with EOS. Windows does NOT test ARM BF16/FP16 or phone memory.
+- `pc_resident_sentence_check.py --hift-low`: three real-text sentences ended
+  normally (15/44/26 tokens this stochastic run); finite non-silent PCM;
+  reused first condition after all sentences and fresh-session output L2 both0.
+- Cloud tests cover sentence boundaries/capacity, DSP, numerical metrics and
+  budget boundaries/typed one-time retry policy. IPA build receipt is kept in
+  ignored `builds/`, separate from unmeasured phone performance.

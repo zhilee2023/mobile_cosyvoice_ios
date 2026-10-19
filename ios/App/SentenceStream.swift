@@ -223,6 +223,9 @@ final class SentenceStream: ObservableObject {
                 if let mode = output["executionMode"] as? String {
                     record("本句实际路线：\(mode)；累计回退 \(output["fallbackCount"] ?? 0)；失败/等待/重试均已计入耗时")
                 }
+                if output["hadProtectedAttempt"] as? Bool == true {
+                    record("本句曾触发内存保护后回退；即使重试生成成功，也不算全程内存门槛通过；最低余量未清零")
+                }
                 try Task.checkCancellation()
                 if output["success"] as? Bool != true {
                     if output["retrySplit"] as? Bool == true, pending[at].depth < 3, pending[at].text.count > 1 {

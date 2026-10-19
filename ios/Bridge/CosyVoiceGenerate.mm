@@ -140,6 +140,10 @@ NSDictionary<NSString *, id> *result(bool ok, NSString *message, Trace &trace) {
              @"minAvailableMB": @(trace.minAvailableMB), @"logPath": documentPath(trace.fileName),
              @"wavPath": documentPath(@"last-generated.wav")};
 }
+NSDictionary<NSString *, id> *memoryResult(NSString *message, Trace &trace) {
+    trace.memoryFailure = true;
+    return result(false,message,trace);
+}
 bool waitAvailable(uint64_t minimum, Trace &trace, NSString *phase) {
     auto start=std::chrono::steady_clock::now();
     int passed=0;
@@ -364,6 +368,7 @@ bool generateSpeechTokens(NSString *directory, NSString *text, const std::vector
         std::this_thread::sleep_for(std::chrono::milliseconds(125));
     }
     trace.record(@"停止：LLM 释放后可用内存未恢复到 2500 MB");
+    trace.memoryFailure = true;
     *failure = @"LLM 已运行，但内存回收未通过门槛；未加载 Flow";
     return false;
 }
@@ -570,7 +575,7 @@ bool writeWav(const std::vector<float> &samples, NSString *fileName = @"last-gen
         if (resident && !waitAvailable(CosyVoiceBudget::residentLlmBeforeLoad,trace,@"常驻Flow下LLM加载前")) return result(false,@"常驻Flow下LLM加载前余量不足",trace);
         if (!resident && os_proc_available_memory() < 2800000000ULL) {
             trace.record(@"停止：初始可用内存低于 2800 MB");
-            return result(false, @"初始可用内存不足；未加载模型", trace);
+            return memoryResult(@"初始可用内存不足；未加载模型", trace);
         }
         std::vector<int> tokens;
         NSString *csv = [NSString stringWithContentsOfFile:[directory stringByAppendingPathComponent:@"prompt-speech-tokens.csv"]
@@ -639,7 +644,7 @@ bool writeWav(const std::vector<float> &samples, NSString *fileName = @"last-gen
         std::fill(mask.begin(), mask.begin() + effectiveFrames, 1.0f);
         if (!resident && os_proc_available_memory() < 2500000000ULL) {
             trace.record(@"停止：Flow 加载前内存门槛未通过");
-            return result(false, @"Flow 加载前可用内存不足", trace);
+            return memoryResult(@"Flow 加载前可用内存不足", trace);
         }
         std::vector<float> mel(80 * audioFrames);
         {
@@ -659,7 +664,7 @@ bool writeWav(const std::vector<float> &samples, NSString *fileName = @"last-gen
             flow.releaseModel();
             if (os_proc_available_memory() < 1200000000ULL) {
                 trace.record(@"安全停止：Flow resize 后可用内存低于 1200 MB；未前向");
-                return result(false, @"Flow resize 后内存不足，已安全停止", trace);
+                return memoryResult(@"Flow resize 后内存不足，已安全停止", trace);
             }
             } else {
                 trace.record(@"复用本批唯一384帧Flow会话；读取/创建/resize=0；全部六个输入仍逐步重传");
@@ -699,7 +704,7 @@ bool writeWav(const std::vector<float> &samples, NSString *fileName = @"last-gen
                               step + 1, secondsSince(started), peak(x)]);
                 if (os_proc_available_memory() < 800000000ULL && step == 0) {
                     trace.record(@"安全停止：Flow 第一步后可用内存低于 800 MB");
-                    return result(false, @"Flow 第一步后内存不足", trace);
+                    return memoryResult(@"Flow 第一步后内存不足", trace);
                 }
             }
             for (int channel = 0; channel < 80; ++channel)
@@ -709,7 +714,7 @@ bool writeWav(const std::vector<float> &samples, NSString *fileName = @"last-gen
         trace.record([NSString stringWithFormat:@"%@；目标 Mel %d 帧，峰值 %.5f",resident?@"Flow保留供下一句；LLM已销毁，开始HiFT":@"Flow 已释放", audioFrames, peak(mel)]);
         if (os_proc_available_memory() < 1000000000ULL) {
             trace.record(@"安全停止：HiFT 前可用内存低于 1000 MB");
-            return result(false, @"HiFT 前内存不足", trace);
+            return memoryResult(@"HiFT 前内存不足", trace);
         }
         std::vector<float> f0;
         {
@@ -775,7 +780,7 @@ bool writeWav(const std::vector<float> &samples, NSString *fileName = @"last-gen
                      @"mel": [NSData dataWithBytes:mel.data() length:mel.size()*sizeof(float)],
                      @"stft": [NSData dataWithBytes:stft.data() length:stft.size()*sizeof(float)]};
         }
-        if (os_proc_available_memory() < 1000000000ULL) return result(false, @"HiFT core 前内存不足", trace);
+        if (os_proc_available_memory() < 1000000000ULL) return memoryResult(@"HiFT core 前内存不足", trace);
         std::vector<float> spectral;
         {
             Graph graph(cpuThreads, optimized);
