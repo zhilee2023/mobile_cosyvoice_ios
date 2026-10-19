@@ -4,6 +4,7 @@ import Foundation
 // The native owner serializes generate/close with std::mutex. It is passed
 // to ONE inference queue, never used for parallel model computations.
 extension CosyVoiceResidentFlow: @unchecked Sendable {}
+extension CosyVoicePipeline: @unchecked Sendable {}
 
 enum SentenceStreamError: LocalizedError {
     case failed(String)
@@ -36,10 +37,10 @@ final class SentenceStream: ObservableObject {
     private var partialURL: URL { Self.documents.appendingPathComponent("last-sentence-stream.partial.wav") }
     private var diagnostics: URL { Self.documents.appendingPathComponent("last-sentence-diagnostics.log") }
 
-    func start(text: String, directory: String, optimized: Bool, threads: Int, player: ChunkPlayer, resident: Bool = false, lowHiFT: Bool = true) {
+    func start(text: String, directory: String, optimized: Bool, threads: Int, player: ChunkPlayer, resident: Bool = false, lowHiFT: Bool = true, experimentMode: String? = nil) {
         guard !isRunning else { return }
         let plan: [String]
-        do { plan = try SentencePlanner.plan(text, limit: resident ? 18 : SentencePlanner.defaultLimit) }
+        do { plan = try SentencePlanner.plan(text, limit: resident || experimentMode != nil ? 18 : SentencePlanner.defaultLimit) }
         catch { status = error.localizedDescription; return }
         player.stop()
         self.player = player
@@ -47,15 +48,17 @@ final class SentenceStream: ObservableObject {
         audioSeconds = 0; computeSeconds = 0; startupSeconds = 0; generatedCount = 0; plannedCount = plan.count
         firstQueuedSeconds = nil; peakMB = 0; minAvailableMB = .greatestFiniteMagnitude
         started = ProcessInfo.processInfo.systemUptime
-        reportID = DiagnosticReport.begin(kind: "sentence-generation", label: resident ? "自适应常驻/串行回退" : "串行基线",
+        let routeLabel = experimentMode == "llm-chain-reuse" ? "整链LLM复用/按需释放" : (experimentMode == "two-sentence-staged" ? "两句分阶段/唯一Flow复用" : (resident ? "自适应常驻/串行回退" : "串行基线"))
+        reportID = DiagnosticReport.begin(kind: "sentence-generation", label: routeLabel,
             parameters: ["text": text, "optimized": optimized, "threads": threads, "hiFTLow": lowHiFT,
-                         "adaptive": resident, "initialSegments": plan.count], sources: DiagnosticReport.sentenceSources)
+                         "adaptive": resident, "pipelineMode": experimentMode ?? "serial", "initialSegments": plan.count], sources: DiagnosticReport.sentenceSources)
         try? Data().write(to: Self.logURL, options: .atomic)
         try? Data().write(to: diagnostics, options: .atomic)
         record("开始句级流水：\(plan.count) 段；\(optimized ? "32 帧对齐/DSP 优化" : "v0.4.1 基线")；CPU \(threads) 线程；播放队列目标≤2秒、硬上限4秒；至多1句待播文件；不是 token 级流式")
         record(resident ? "自适应路线：尝试唯一Flow384；LLM前1800MB不足则释放Flow，本批改串行；每句重新prefill，无跨句KV；800MB底线不变" : "对照版：每句释放全部模型，每段最多160语音token/6.4秒")
         record("HiFT core=\(lowHiFT ? "Low" : "High")，F0与Flow仍High；非token级流式")
-        task = Task { await run(plan: plan, directory: directory, optimized: optimized, threads: threads, player: player, resident: resident, lowHiFT: lowHiFT) }
+        if let experimentMode { record("新整链路线：\(experimentMode)；先短文验收，不保证RTF降低/分钟级内存稳定；两句路线首句可能更晚") }
+        task = Task { await run(plan: plan, directory: directory, optimized: optimized, threads: threads, player: player, resident: resident, lowHiFT: lowHiFT, experimentMode: experimentMode) }
     }
 
     func stop() {
@@ -94,13 +97,40 @@ final class SentenceStream: ObservableObject {
         }
     }
 
-    private func infer(_ text: String, directory: String, optimized: Bool, threads: Int, session: CosyVoiceResidentFlow?, lowHiFT: Bool) async -> [String: Any] {
+    private func infer(_ text: String, directory: String, optimized: Bool, threads: Int, session: CosyVoiceResidentFlow?, lowHiFT: Bool, pipeline: CosyVoicePipeline? = nil, staged: Bool = false) async -> [String: Any] {
         await withCheckedContinuation { continuation in
             worker.async {
-                let result = session?.generateText(text, lowPrecisionHiFT: lowHiFT) ?? CosyVoiceGenerate.generateText(text, atDirectory: directory, optimized: optimized, cpuThreads: threads, lowPrecisionHiFT: lowHiFT)
+                let result: [String: Any]
+                if let pipeline {
+                    result = staged ? pipeline.generatePrepared(lowPrecisionHiFT: lowHiFT) : pipeline.generateText(text, lowPrecisionHiFT: lowHiFT)
+                } else {
+                    result = session?.generateText(text, lowPrecisionHiFT: lowHiFT) ?? CosyVoiceGenerate.generateText(text, atDirectory: directory, optimized: optimized, cpuThreads: threads, lowPrecisionHiFT: lowHiFT)
+                }
                 continuation.resume(returning: result)
             }
         }
+    }
+
+    private func beginPipeline(_ directory: String, mode: String) async -> [String: Any] {
+        await withCheckedContinuation { continuation in
+            worker.async { continuation.resume(returning: CosyVoicePipeline.begin(atDirectory: directory, mode: mode)) }
+        }
+    }
+    private func preparePair(_ texts: [String], pipeline: CosyVoicePipeline) async -> [String: Any] {
+        await withCheckedContinuation { continuation in
+            worker.async { continuation.resume(returning: pipeline.prepareTexts(texts)) }
+        }
+    }
+    private func closePipeline(_ session: CosyVoicePipeline) async -> [String: Any] {
+        let begin = ProcessInfo.processInfo.systemUptime
+        let result: [String: Any] = await withCheckedContinuation { continuation in
+            worker.async { continuation.resume(returning: session.close()) }
+        }
+        computeSeconds += ProcessInfo.processInfo.systemUptime - begin
+        peakMB = max(peakMB, result["peakFootprintMB"] as? Double ?? 0)
+        minAvailableMB = min(minAvailableMB, result["minAvailableMB"] as? Double ?? .greatestFiniteMagnitude)
+        record("完整链路候选已关闭；模型及token队列回收，见统一报告中的生命周期")
+        return result
     }
 
     private func beginResident(_ directory: String) async -> [String: Any] {
@@ -180,9 +210,15 @@ final class SentenceStream: ObservableObject {
         return Double(input.length) / 24_000
     }
 
-    private func run(plan: [String], directory: String, optimized: Bool, threads: Int, player: ChunkPlayer, resident: Bool, lowHiFT: Bool) async {
+    private func run(plan: [String], directory: String, optimized: Bool, threads: Int, player: ChunkPlayer, resident: Bool, lowHiFT: Bool, experimentMode: String?) async {
         var writer: AVAudioFile?
         var residentSession: CosyVoiceResidentFlow?
+        var pipelineSession: CosyVoicePipeline?
+        var lifecycleResult: [String: Any] = [:]
+        var attempts: [[String: Any]] = []
+        var generationWallSeconds: Double?
+        var pairRemaining = 0
+        let staged = experimentMode == "two-sentence-staged"
         var completedPlayback = false
         // Only these two app-owned scratch files can be replaced/removed here.
         let slots = (0...1).map { Self.documents.appendingPathComponent("sentence-stream-slot-\($0).wav") }
@@ -197,12 +233,30 @@ final class SentenceStream: ObservableObject {
                          "firstQueuedSeconds": firstQueuedSeconds.map { $0 as Any } ?? NSNull(),
                          "peakFootprintMB": peakMB, "minAvailableMB": minAvailableMB,
                          "completedAudio": hasCompletedAudio, "completedPlayback": completedPlayback,
+                         "pipelineMode": experimentMode ?? "serial", "lifecycle": lifecycleResult,
+                         "attempts": attempts,
+                         "generationWallSeconds": generationWallSeconds.map { $0 as Any } ?? NSNull(),
+                         "generationWallRTF": generationWallSeconds.map { audioSeconds > 0 ? $0/audioSeconds as Any : NSNull() } ?? NSNull(),
                          "queueGaps": player.gapCount, "queueGapSeconds": player.gapSeconds, "tokenStreaming": false])
             reportID = nil
         }
         var pending = plan.map { (text: $0, depth: 0) }
         var at = 0
         do {
+            if let experimentMode {
+                let begin = ProcessInfo.processInfo.systemUptime
+                let setup = await beginPipeline(directory, mode: experimentMode)
+                startupSeconds = ProcessInfo.processInfo.systemUptime - begin
+                computeSeconds += startupSeconds
+                pipelineSession = setup["session"] as? CosyVoicePipeline
+                peakMB = max(peakMB, setup["peakFootprintMB"] as? Double ?? 0)
+                minAvailableMB = min(minAvailableMB, setup["minAvailableMB"] as? Double ?? .greatestFiniteMagnitude)
+                guard setup["success"] as? Bool == true, pipelineSession != nil else {
+                    throw SentenceStreamError.failed(setup["message"] as? String ?? "候选初始化失败")
+                }
+                record("本批候选调度器已就绪，模型按阶段加载；所有调用/等待/失败均计入计算RTF")
+                try Task.checkCancellation()
+            }
             if resident {
                 let begin = ProcessInfo.processInfo.systemUptime
                 let setup = await beginResident(directory)
@@ -224,18 +278,50 @@ final class SentenceStream: ObservableObject {
                 commonFormat: .pcmFormatFloat32, interleaved: false)
             while at < pending.count {
                 try Task.checkCancellation()
-                if !resident { try await memoryGate() }
+                if !resident && pipelineSession == nil { try await memoryGate() }
+                if staged, pairRemaining == 0, let pipelineSession {
+                    let pair = Array(pending[at..<min(pending.count,at+2)].map(\.text))
+                    let prepareBegin = ProcessInfo.processInfo.systemUptime
+                    let prepared = await preparePair(pair, pipeline: pipelineSession)
+                    let prepareElapsed = ProcessInfo.processInfo.systemUptime - prepareBegin
+                    computeSeconds += prepareElapsed
+                    attempts.append(["phase": "prepare-pair", "firstSegment": at+1, "seconds": prepareElapsed, "result": prepared])
+                    peakMB = max(peakMB, prepared["peakFootprintMB"] as? Double ?? 0)
+                    minAvailableMB = min(minAvailableMB, prepared["minAvailableMB"] as? Double ?? .greatestFiniteMagnitude)
+                    captureDiagnostics(sentence: at+1, result: prepared)
+                    try Task.checkCancellation()
+                    if prepared["success"] as? Bool != true {
+                        let offset = prepared["failedTextIndex"] as? Int ?? 0
+                        let index = at + offset
+                        if prepared["retrySplit"] as? Bool == true, offset >= 0, offset < pair.count,
+                           pending[index].depth < 3, pending[index].text.count > 1 {
+                            let item = pending[index]
+                            let pieces = try SentencePlanner.partition(item.text, limit: max(1,item.text.utf16.count/2))
+                            guard pieces.count > 1, pending.count + pieces.count - 1 <= 128 else { throw SentenceStreamError.failed("句段不能继续拆分") }
+                            pending.replaceSubrange(index...index, with: pieces.map { (text: $0, depth: item.depth+1) })
+                            plannedCount = pending.count
+                            record("两句准备阶段超限；未播出此批，有限拆句后重新准备；失败及重算均计入RTF")
+                            continue
+                        }
+                        throw SentenceStreamError.failed(prepared["message"] as? String ?? "两句token准备失败")
+                    }
+                    pairRemaining = prepared["preparedCount"] as? Int ?? 0
+                    guard pairRemaining == pair.count else { throw SentenceStreamError.failed("预生成token队列数量错误") }
+                    record("已准备\(pairRemaining)句完整EOS token，LLM已释放；开始唯一Flow声学阶段")
+                }
                 status = "生成第 \(at + 1)/\(pending.count) 段；已生成 \(String(format: "%.2f", audioSeconds)) 秒，上一句可同时播放。"
                 record("句 \(at + 1)/\(pending.count) 开始，\(pending[at].text.utf16.count) UTF-16 单元")
                 let begin = ProcessInfo.processInfo.systemUptime
-                let output = await infer(pending[at].text, directory: directory, optimized: optimized, threads: threads, session: residentSession, lowHiFT: lowHiFT)
+                let output = await infer(pending[at].text, directory: directory, optimized: optimized, threads: threads, session: residentSession, lowHiFT: lowHiFT, pipeline: pipelineSession, staged: staged)
                 let elapsed = ProcessInfo.processInfo.systemUptime - begin
                 computeSeconds += elapsed
+                attempts.append(["phase": "sentence", "segment": at+1, "seconds": elapsed, "result": output])
                 peakMB = max(peakMB, output["peakFootprintMB"] as? Double ?? 0)
                 minAvailableMB = min(minAvailableMB, output["minAvailableMB"] as? Double ?? .greatestFiniteMagnitude)
                 captureDiagnostics(sentence: at + 1, result: output)
                 if let mode = output["executionMode"] as? String {
                     record("本句实际路线：\(mode)；累计回退 \(output["fallbackCount"] ?? 0)；失败/等待/重试均已计入耗时")
+                    record("本句LLM已保留=\(output["llmRetainedAfterRequest"] ?? "不适用")；小批Flow复用=\(output["flowReusedWithinPair"] ?? "不适用")；LLM规划释放=\(output["llmBudgetReleases"] ?? 0)")
                 }
                 if output["hadProtectedAttempt"] as? Bool == true {
                     record("本句曾触发内存保护后回退；即使重试生成成功，也不算全程内存门槛通过；最低余量未清零")
@@ -269,6 +355,11 @@ final class SentenceStream: ObservableObject {
                 try Task.checkCancellation()
                 playbackTask = Task { try await self.feed(slot, player: player) }
                 at += 1
+                if staged { pairRemaining -= 1 }
+            }
+            if let session = pipelineSession {
+                lifecycleResult = await closePipeline(session)
+                pipelineSession = nil
             }
             if let session = residentSession {
                 await closeResident(session)
@@ -280,6 +371,7 @@ final class SentenceStream: ObservableObject {
                 _ = try FileManager.default.replaceItemAt(Self.audioURL, withItemAt: partialURL)
             } else { try FileManager.default.moveItem(at: partialURL, to: Self.audioURL) }
             hasCompletedAudio = true
+            generationWallSeconds = ProcessInfo.processInfo.systemUptime - started
             record(String(format: "全部生成完成：%d 段，音频 %.2f 秒；计算 %.3f 秒，计算 RTF %.3f；生成墙钟 %.3f 秒（含回收/队列等待），墙钟 RTF %.3f；首块入队 %.3f 秒；播放队列断供观测 %d 次/%.3f 秒；采样峰值 %.0f MB，最低可用 %.0f MB", generatedCount, audioSeconds, computeSeconds, computeSeconds / audioSeconds, ProcessInfo.processInfo.systemUptime - started, (ProcessInfo.processInfo.systemUptime - started) / audioSeconds, firstQueuedSeconds ?? -1, player.gapCount, player.gapSeconds, peakMB, minAvailableMB))
             if let last = playbackTask { try await last.value }
             status = "生成完成，正在播完队列…"
@@ -298,5 +390,6 @@ final class SentenceStream: ObservableObject {
             record(status + "；已生成部分仍保留为 partial 文件，不冒充整篇完成")
         }
         if let session = residentSession { await closeResident(session) }
+        if let session = pipelineSession { lifecycleResult = await closePipeline(session) }
     }
 }

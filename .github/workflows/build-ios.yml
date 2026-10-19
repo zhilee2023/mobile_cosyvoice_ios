@@ -25,6 +25,8 @@ jobs:
           build-tests/report-check
           swiftc ios/App/ExperimentCatalog.swift tests/ExperimentCatalogChecks.swift -o build-tests/catalog-check
           build-tests/catalog-check
+          clang++ -fobjc-arc -std=c++17 -Iios/Bridge -framework Foundation tests/failure_lifetime_check.mm -o build-tests/failure-check
+          NSZombieEnabled=YES build-tests/failure-check
           python3 -m unittest discover -s tests -p test_report_analysis.py
           clang++ -O2 -std=c++17 -Iios/Bridge tests/dsp_check.cpp -o build-tests/dsp-check
           build-tests/dsp-check

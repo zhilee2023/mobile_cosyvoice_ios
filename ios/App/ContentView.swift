@@ -15,6 +15,10 @@ struct ContentView: View {
     @State private var errorMessage: String?
     @State private var reportStatus = ""
     private var busy: Bool { singleRunning || sentences.isRunning || experiments.isRunning }
+    private var isSingleSentence: Bool {
+        guard !text.isEmpty, text.utf16.count <= 40 else { return false }
+        return (try? SentencePlanner.plan(text, limit: 40).count) == 1
+    }
 
     var body: some View {
         NavigationStack {
@@ -46,7 +50,9 @@ struct ContentView: View {
                     Button("按句生成与播放") { startSentences() }
                         .disabled(!models.ready || busy || text.isEmpty)
                     Button("只生成当前短句 WAV") { generateSingle() }
-                        .disabled(!models.ready || busy || text.isEmpty || text.utf16.count > 40)
+                        .disabled(!models.ready || busy || !isSingleSentence)
+                    Text("短句WAV仅接受一条句子；多句使用按句生成。超出speech token上限会提示拆短，不强制截断。")
+                        .font(.caption).foregroundStyle(.secondary)
                     Button("停止句级生成") { sentences.stop() }.disabled(!sentences.isRunning)
                     Text(sentences.status).font(.caption).textSelection(.enabled)
                     Text("已生成 \(sentences.audioSeconds, specifier: "%.2f") 秒 · 播放队列 \(player.queuedSeconds, specifier: "%.2f") 秒 · 断供观测 \(player.gapCount) 次")
@@ -66,14 +72,19 @@ struct ContentView: View {
                     Text(experiments.status).font(.caption).textSelection(.enabled)
                   }
                 }
-                Section("下一步优化 · 尚未接通") {
+                Section("新整链对照 · 待真机验收") {
+                    ForEach(ExperimentCatalog.available.filter { $0.execution == .sentence }, id: \.id) { route in
+                        Button(route.title) { startSentences(mode: route.id) }
+                            .disabled(!models.ready || busy || text.isEmpty)
+                        Text(route.conclusion).font(.caption).foregroundStyle(.secondary)
+                    }
                     ForEach(ExperimentCatalog.planned, id: \.id) { route in
                         Text(route.title)
                         Text(route.conclusion).font(.caption).foregroundStyle(.secondary)
                     }
                     Text("先验证完整EOS＋HiFT时的真实共驻内存，再做长文；20ms采样最低余量800 MB不降低。若共驻不够，改有限句段分阶段调度，不堆多套模型。")
                         .font(.caption).foregroundStyle(.secondary)
-                    Text("后续才测唯一小尺寸Flow复用、首句短/后句较长的调度。真token流式需匹配lookahead/cache/finalize导出；当前仍是句级播放。此版仅整理界面与结论，不宣称RTF已降低。")
+                    Text("请分别冷启动，保持默认文本、HiFT Low和4线程，各跑一条路线，再分享一个统一报告。比较初始化/失败/释放均计入的RTF、首块入队、断供、最低余量和真实复用次数；暂不宣称更快。仍是句级播放，不是token级流式。")
                         .font(.caption).foregroundStyle(.secondary)
                 }
                 Section("统一测试报告 · 只发这一个") {
@@ -124,10 +135,10 @@ struct ContentView: View {
         }
     }
     private func exists(_ url: URL) -> Bool { FileManager.default.fileExists(atPath: url.path) }
-    private func startSentences() {
+    private func startSentences(mode: String? = nil) {
         wavPlayer?.stop()
         sentences.start(text: text, directory: models.directory.path, optimized: true,
-                        threads: threads, player: player, resident: false, lowHiFT: lowHiFT)
+                        threads: threads, player: player, resident: false, lowHiFT: lowHiFT, experimentMode: mode)
     }
     private func startExperiments(_ routes: [String]) {
         wavPlayer?.stop(); player.stop()

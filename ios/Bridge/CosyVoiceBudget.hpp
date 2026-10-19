@@ -8,6 +8,10 @@ constexpr std::uint64_t minimumAvailable = 800000000ULL;
 // plus the unchanged 800 MB floor and 100 MB planning margin.
 constexpr std::uint64_t residentLlmBeforeLoad = 1800000000ULL;
 constexpr std::uint64_t residentFlowBeforeRun = 1200000000ULL;
+constexpr std::uint64_t reusableLlmBeforeLoad = 1700000000ULL;
+// Flow High observed resize growth ~1.3GB; reserve 1.5GB plus 800MB floor.
+// Planning only: final acceptance still requires actual 20ms measurements.
+constexpr std::uint64_t flowWithLlmBeforeResize = 2300000000ULL;
 constexpr bool shouldReleaseResident(std::uint64_t available) {
     return available < residentLlmBeforeLoad;
 }

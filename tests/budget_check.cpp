@@ -14,6 +14,8 @@ int main() {
     require(shouldReleaseResident(1586000000));
     require(!shouldReleaseResident(1800000000));
     require(residentFlowBeforeRun > minimumAvailable);
+    require(reusableLlmBeforeLoad >= minimumAvailable+900000000ULL);
+    require(flowWithLlmBeforeResize >= minimumAvailable+1500000000ULL);
     require(mayRetrySerial(false,true,true));
     require(!mayRetrySerial(false,false,true)); // NaN/path/EOS errors never qualify.
     require(!mayRetrySerial(true,true,true));

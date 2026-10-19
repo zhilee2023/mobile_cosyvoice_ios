@@ -2,6 +2,7 @@
 #include "CosyVoiceDSP.hpp"
 #include "CosyVoiceProbeMetrics.hpp"
 #include "CosyVoiceBudget.hpp"
+#include "CosyVoiceFailure.hpp"
 #import <MNN/Interpreter.hpp>
 #import <MNN/llm/llm.hpp>
 #import <mach/mach.h>
@@ -220,7 +221,7 @@ float peak(const std::vector<float> &values) {
 using Llm = MNN::Transformer::Llm;
 using LlmOwner = std::unique_ptr<Llm, decltype(&Llm::destroy)>;
 bool generateSpeechTokens(NSString *directory, NSString *text, const std::vector<int> &prompt,
-                          Trace &trace, std::vector<int> &speech, NSString **failure, int cpuThreads, bool *limitReached,
+                          Trace &trace, std::vector<int> &speech, CosyVoiceFailureOutput failure, int cpuThreads, bool *limitReached,
                           bool residentProbe = false, const std::function<bool()> &whileLlmAlive = {},
                           bool retainedFlow = false, int speechLimit = kMaxSpeechTokens,
                           LlmOwner *reusable = nullptr, NSMutableDictionary *metrics = nil, bool deterministic = false) {
@@ -283,6 +284,9 @@ bool generateSpeechTokens(NSString *directory, NSString *text, const std::vector
         LlmOwner local(nullptr, &Llm::destroy);
         LlmOwner &owner = reusable ? *reusable : local;
         bool needsLoad = !owner;
+        if (needsLoad && reusable && !waitAvailable(CosyVoiceBudget::reusableLlmBeforeLoad,trace,@"复用路线LLM加载前")) {
+            *failure = @"LLM加载规划余量不足，未加载"; return false;
+        }
         if (needsLoad) owner.reset(Llm::createLLM(configPath.UTF8String));
         Llm *llm = owner.get();
         if (!llm) {
@@ -343,7 +347,7 @@ bool generateSpeechTokens(NSString *directory, NSString *text, const std::vector
             *limitReached = !invalidCount && speech.size() >= speechLimit && (!eos || speech.size() > speechLimit);
             nativeLog.recordFailure(trace);
             *failure = residentProbe ? @"共驻LLM的两步输出不是有效语音token，未执行共驻Flow" : (!eos || speech.size() > speechLimit
-                ? [NSString stringWithFormat:@"短句超过%d speech token上限（约%.1f秒），未截断；请拆短",speechLimit,speechLimit/25.0]
+                ? CosyVoiceTokenLimitMessage(speechLimit)
                 : @"LLM 未生成有效的 speech token，未运行 Flow");
             return false;
         }
@@ -357,7 +361,7 @@ bool generateSpeechTokens(NSString *directory, NSString *text, const std::vector
         [csv writeToFile:documentPath(@"last-generated-speech-tokens.csv") atomically:YES encoding:NSUTF8StringEncoding error:nil];
         }
     }
-    if (reusable) { trace.record(@"隔离试验LLM仍存活；不加载Flow/HiFT；下次请求重新prefill"); return true; }
+    if (reusable) { trace.record(@"复用LLM仍存活；调用方决定后续声学调度；下次请求清KV并重新prefill"); return true; }
     if (residentProbe) { trace.record(@"共驻探针 LLM 已销毁；Flow 仍保持，未套用普通串行 2500 MB 回收门槛"); return true; }
     if (retainedFlow) {
         trace.record(@"整句LLM已正常EOS并销毁；仅保留真实speech token与常驻Flow，不保留跨句KV");
@@ -512,6 +516,7 @@ bool writeWav(const std::vector<float> &samples, NSString *fileName = @"last-gen
 + (NSDictionary<NSString *, id> *)runAtDirectory:(NSString *)directory text:(nullable NSString *)text lowPrecisionFlow:(BOOL)lowPrecision optimized:(BOOL)optimized cpuThreads:(NSInteger)threads prepareHiFT:(BOOL)prepareHiFT;
 + (NSDictionary<NSString *, id> *)runAtDirectory:(NSString *)directory text:(nullable NSString *)text lowPrecisionFlow:(BOOL)lowPrecision optimized:(BOOL)optimized cpuThreads:(NSInteger)threads prepareHiFT:(BOOL)prepareHiFT resident:(Graph *)resident;
 + (NSDictionary<NSString *, id> *)runAtDirectory:(NSString *)directory text:(nullable NSString *)text lowPrecisionFlow:(BOOL)lowPrecision optimized:(BOOL)optimized cpuThreads:(NSInteger)threads prepareHiFT:(BOOL)prepareHiFT resident:(Graph *)resident lowPrecisionHiFT:(BOOL)lowHiFT;
++ (NSDictionary<NSString *, id> *)runAtDirectory:(NSString *)directory text:(nullable NSString *)text lowPrecisionFlow:(BOOL)lowPrecision optimized:(BOOL)optimized cpuThreads:(NSInteger)threads prepareHiFT:(BOOL)prepareHiFT resident:(Graph *)resident lowPrecisionHiFT:(BOOL)lowHiFT preparedSpeech:(const std::vector<int> *)prepared reuseLlm:(LlmOwner *)reusable;
 @end
 
 @implementation CosyVoiceGenerate
@@ -558,6 +563,10 @@ bool writeWav(const std::vector<float> &samples, NSString *fileName = @"last-gen
 }
 
 + (NSDictionary<NSString *, id> *)runAtDirectory:(NSString *)directory text:(nullable NSString *)text lowPrecisionFlow:(BOOL)lowPrecision optimized:(BOOL)optimized cpuThreads:(NSInteger)threads prepareHiFT:(BOOL)prepareHiFT resident:(Graph *)resident lowPrecisionHiFT:(BOOL)lowHiFT {
+    return [self runAtDirectory:directory text:text lowPrecisionFlow:lowPrecision optimized:optimized cpuThreads:threads prepareHiFT:prepareHiFT resident:resident lowPrecisionHiFT:lowHiFT preparedSpeech:nullptr reuseLlm:nullptr];
+}
+
++ (NSDictionary<NSString *, id> *)runAtDirectory:(NSString *)directory text:(nullable NSString *)text lowPrecisionFlow:(BOOL)lowPrecision optimized:(BOOL)optimized cpuThreads:(NSInteger)threads prepareHiFT:(BOOL)prepareHiFT resident:(Graph *)resident lowPrecisionHiFT:(BOOL)lowHiFT preparedSpeech:(const std::vector<int> *)prepared reuseLlm:(LlmOwner *)reusable {
     @autoreleasepool {
         Trace trace(prepareHiFT ? @"last-hift-precision.log" : @"last-generation.log");
         std::unique_ptr<MemorySampler> sampling;
@@ -580,8 +589,8 @@ bool writeWav(const std::vector<float> &samples, NSString *fileName = @"last-gen
                 return result(false, @"请输入一条短句（首版最多 40 字符）；长句与流式尚待验证", trace);
             }
         }
-        if (resident && !waitAvailable(CosyVoiceBudget::residentLlmBeforeLoad,trace,@"常驻Flow下LLM加载前")) return result(false,@"常驻Flow下LLM加载前余量不足",trace);
-        if (!resident && os_proc_available_memory() < 2800000000ULL) {
+        if (resident && !prepared && !waitAvailable(CosyVoiceBudget::residentLlmBeforeLoad,trace,@"常驻Flow下LLM加载前")) return result(false,@"常驻Flow下LLM加载前余量不足",trace);
+        if (!resident && !prepared && !reusable && os_proc_available_memory() < 2800000000ULL) {
             trace.record(@"停止：初始可用内存低于 2800 MB");
             return memoryResult(@"初始可用内存不足；未加载模型", trace);
         }
@@ -597,11 +606,18 @@ bool writeWav(const std::vector<float> &samples, NSString *fileName = @"last-gen
         }
         std::vector<int> speech(std::begin(kSpeechTokens), std::end(kSpeechTokens));
         if (prepareHiFT) speech.assign(std::begin(kProbeSpeechTokens), std::end(kProbeSpeechTokens));
-        if (textGeneration) {
+        NSMutableDictionary *llmMetrics = [NSMutableDictionary dictionary];
+        if (prepared) {
+            speech = *prepared;
+            if (!CosyVoiceBudget::fitsSpeech(int(speech.size())) ||
+                !std::all_of(speech.begin(),speech.end(),[](int token){return token>=0 && token<=6560;}))
+                return result(false,@"预生成speech token无效，未运行Flow",trace);
+            trace.record([NSString stringWithFormat:@"使用本批已正常EOS的%zu个speech token；本次不重复运行LLM",speech.size()]);
+        } else if (textGeneration) {
             speech.clear();
             NSString *failure = nil;
             bool limitReached = false;
-            if (!generateSpeechTokens(directory, text, tokens, trace, speech, &failure, cpuThreads, &limitReached,false,{},resident!=nullptr,resident?kResidentSpeechTokens:kMaxSpeechTokens)) {
+            if (!generateSpeechTokens(directory, text, tokens, trace, speech, &failure, cpuThreads, &limitReached,false,{},resident!=nullptr,resident?kResidentSpeechTokens:kMaxSpeechTokens,reusable,llmMetrics)) {
                 trace.record([@"停止：" stringByAppendingString:failure ?: @"LLM 失败"]);
                 NSMutableDictionary *failed = [result(false, failure ?: @"LLM 失败", trace) mutableCopy];
                 failed[@"retrySplit"] = @(limitReached);
@@ -650,7 +666,14 @@ bool writeWav(const std::vector<float> &samples, NSString *fileName = @"last-gen
         noise.clear(); noise.shrink_to_fit(); mu.clear(); mu.shrink_to_fit();
         std::vector<float> mask(flowFrames, 0);
         std::fill(mask.begin(), mask.begin() + effectiveFrames, 1.0f);
-        if (!resident && os_proc_available_memory() < 2500000000ULL) {
+        bool llmHeldForFlow = reusable && bool(*reusable);
+        if (llmHeldForFlow && os_proc_available_memory() < CosyVoiceBudget::flowWithLlmBeforeResize) {
+            trace.record(@"LLM共驻下Flow初始化规划不足2300 MB；先释放LLM，保留已生成token；本句不重跑LLM");
+            reusable->reset(); llmHeldForFlow = false;
+            llmMetrics[@"releasedBeforeFlowForBudget"] = @YES;
+            if (!waitAvailable(2500000000ULL,trace,@"释放LLM后声学阶段")) return result(false,@"释放LLM后余量未恢复，未运行Flow",trace);
+        }
+        if (!resident && !llmHeldForFlow && os_proc_available_memory() < 2500000000ULL) {
             trace.record(@"停止：Flow 加载前内存门槛未通过");
             return memoryResult(@"Flow 加载前可用内存不足", trace);
         }
@@ -670,8 +693,15 @@ bool writeWav(const std::vector<float> &samples, NSString *fileName = @"last-gen
             flow.net->resizeSession(flow.session);
             trace.record([NSString stringWithFormat:@"%@ %d 帧 resize %.3f 秒；尚未前向", flowLabel, flowFrames, secondsSince(started)]);
             flow.releaseModel();
-            if (os_proc_available_memory() < 1200000000ULL) {
-                trace.record(@"安全停止：Flow resize 后可用内存低于 1200 MB；未前向");
+            if (llmHeldForFlow && os_proc_available_memory() < 1000000000ULL) {
+                if (!sampledBudgetOK(trace)) return result(false,@"Flow初始化时采样余量低于800 MB，停止候选",trace);
+                trace.record(@"Flow初始化后LLM共驻余量不足1000 MB；释放LLM，保留同一Flow会话，不重跑token");
+                reusable->reset(); llmHeldForFlow = false;
+                llmMetrics[@"releasedAfterResizeForBudget"] = @YES;
+                if (!waitAvailable(1200000000ULL,trace,@"释放LLM后Flow工作区")) return result(false,@"释放LLM后Flow工作区余量不足",trace);
+            }
+            if (os_proc_available_memory() < (llmHeldForFlow ? 1000000000ULL : 1200000000ULL)) {
+                trace.record(@"安全停止：Flow resize后工作区规划余量不足；未前向");
                 return memoryResult(@"Flow resize 后内存不足，已安全停止", trace);
             }
             } else {
@@ -855,6 +885,10 @@ bool writeWav(const std::vector<float> &samples, NSString *fileName = @"last-gen
         completed[@"rtf"] = @(elapsed / audioSeconds);
         completed[@"residentFlow"] = @(resident!=nullptr);
         completed[@"hiftCorePrecision"] = lowHiFT ? @"low" : @"high";
+        completed[@"speechTokens"] = @(speech.size());
+        completed[@"eos"] = @YES;
+        completed[@"llmMetrics"] = llmMetrics;
+        completed[@"llmHeldForFlow"] = @(llmHeldForFlow);
         return completed;
     }
 }
@@ -863,3 +897,4 @@ bool writeWav(const std::vector<float> &samples, NSString *fileName = @"last-gen
 @end
 
 #include "CosyVoiceResidentFlow.inc"
+#include "CosyVoicePipeline.inc"

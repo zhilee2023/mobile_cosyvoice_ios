@@ -6,7 +6,7 @@ final class ExperimentRunner: ObservableObject {
     // Only reviewed, implemented, unresolved routes get runnable buttons.
     // Historical implementations stay in the bridge; archived IDs cannot run here.
     static var routes: [(id: String, title: String)] {
-        ExperimentCatalog.available.map { (id: $0.id, title: $0.title) }
+        ExperimentCatalog.available.filter { $0.execution == .module }.map { (id: $0.id, title: $0.title) }
     }
     static var summaryURL: URL { SentenceStream.documents.appendingPathComponent("last-experiment-summary.log") }
     @Published private(set) var isRunning = false

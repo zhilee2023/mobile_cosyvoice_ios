@@ -30,6 +30,9 @@ struct SentencePlannerChecks {
         let residentText = "你好，欢迎来到离线语音测试。我们正在测试按句生成和播放。希望每一句都清晰自然。"
         let resident = try SentencePlanner.plan(residentText, limit: 18)
         precondition(resident.joined() == residentText && resident.allSatisfy { $0.utf16.count <= 18 })
+        precondition(resident.count == 3) // Identical default 3-sentence fixture across both new routes.
+        let singleButtonPlan = try SentencePlanner.plan(residentText, limit: 40)
+        precondition(singleButtonPlan.count == 3)
         print("PASS: sentence splitting preserves content, bounds UTF-16, handles emoji/newlines/decimals/retry limits")
     }
 }

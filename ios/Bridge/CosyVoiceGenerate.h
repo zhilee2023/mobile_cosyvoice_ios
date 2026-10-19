@@ -11,6 +11,15 @@ NS_ASSUME_NONNULL_BEGIN
 - (NSDictionary<NSString *, id> *)close;
 @end
 
+// One owner per batch. No static model pools; methods are serialized.
+@interface CosyVoicePipeline : NSObject
++ (NSDictionary<NSString *, id> *)beginAtDirectory:(NSString *)directory mode:(NSString *)mode NS_SWIFT_NAME(begin(atDirectory:mode:));
+- (NSDictionary<NSString *, id> *)generateText:(NSString *)text lowPrecisionHiFT:(BOOL)low;
+- (NSDictionary<NSString *, id> *)prepareTexts:(NSArray<NSString *> *)texts;
+- (NSDictionary<NSString *, id> *)generatePreparedWithLowPrecisionHiFT:(BOOL)low NS_SWIFT_NAME(generatePrepared(lowPrecisionHiFT:));
+- (NSDictionary<NSString *, id> *)close;
+@end
+
 @interface CosyVoiceGenerate : NSObject
 + (NSDictionary<NSString *, id> *)runFixedTokenSampleAtDirectory:(NSString *)directory;
 + (NSDictionary<NSString *, id> *)runFixedTokenSampleAtDirectory:(NSString *)directory lowPrecisionFlow:(BOOL)lowPrecision;

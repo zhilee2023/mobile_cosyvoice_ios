@@ -11,7 +11,7 @@ enum DiagnosticReport {
     }
     static var url: URL { archive.url }
     static let generationSources = ["last-generation.log", "last-llm-runtime.log"]
-    static let sentenceSources = ["last-sentence-stream.log", "last-sentence-diagnostics.log", "last-resident-lifecycle.log"] + generationSources
+    static let sentenceSources = ["last-sentence-stream.log", "last-sentence-diagnostics.log", "last-resident-lifecycle.log", "last-pipeline-lifecycle.log"] + generationSources
     static func prepare() {
         do {
             let routes = ["flow-buckets", "flow-threads", "flow-thread-4", "flow-thread-2", "flow-thread-3", "llm-reuse", "llm-threads", "hift-threads", "flow-bf16"]
