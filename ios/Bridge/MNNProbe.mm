@@ -162,6 +162,16 @@ NSDictionary<NSString *, id> *probeLargeSession(NSString *directory, ProbeMode m
             return probeResult(false, @"MNN 会话创建失败；详见内存日志", stats);
         }
         checkpoint(stats, [@"会话已创建；开始设置真实测试形状：" stringByAppendingString:label]);
+        int pipelineBackend = -1;
+        if (metal) {
+            interpreter->getSessionInfo(session, MNN::Interpreter::BACKENDS, &pipelineBackend);
+            checkpoint(stats, [NSString stringWithFormat:@"主 pipeline backend=%d（Metal=%d；不代表逐算子全部在GPU）",
+                               pipelineBackend, int(MNN_FORWARD_METAL)]);
+            if (pipelineBackend != MNN_FORWARD_METAL) {
+                interpreter->releaseSession(session);
+                return probeResult(false, @"主 pipeline 未使用 Metal；未执行resize或前向", stats);
+            }
+        }
         if (metal && os_proc_available_memory() < 1000000000ULL) {
             checkpoint(stats, @"停止：Metal会话创建后不足1000 MB，未执行resize或前向");
             interpreter->releaseSession(session);
