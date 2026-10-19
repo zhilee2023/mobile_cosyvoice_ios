@@ -67,6 +67,7 @@ jobs:
           assert info['UIFileSharingEnabled'] is True
           assert info['LSSupportsOpeningDocumentsInPlace'] is True
           assert (app / 'model-manifest.json').is_file()
+          assert not list(app.rglob('*.inc')), 'Bridge includes must not be bundled as resources'
           print('Unsigned app and file sharing verified')
           PY
       - name: Package unsigned IPA

@@ -6,6 +6,7 @@
 
 ## 当前状态
 
+- v0.6.0 新增独立“按句生成 · 常驻Flow384”入口：整批唯一CPU High Flow，4线程、两步不变，每句重新prefill并销毁LLM后才运行HiFT High；超105 speech token（约4.2秒）拆句重做，结束/取消/失败后关闭Flow，保留原逐句释放基线。只有短KV共驻探针已由iPhone确认（峰值2308 MB、最低可用913 MB）；完整整句/HiFT/长文共驻与RTF尚待新包真机验收，不承诺更快或绝不OOM。17个模型不变。见 [常驻句级版与测试步骤](docs/resident-sentences-v060.md)。
 - v0.5.1 新增两项隔离真机探针：HiFT core High/Low相同Mel/F0输入、各3次前向和两段2.96秒WAV；唯一384帧Flow会话在LLM加载前/存活时/释放后复用，LLM只decode2个token，约20ms采样内存。普通生成仍保持High和原内存门槛，不自动开启常驻或延长输出。PC调用顺序回归通过，iPhone精度/共驻尚待实测。见 [测试入口与验收边界](docs/optimization-probes-v051.md)。
 - v0.4.1 已由真机日志确认完整手机文字链路成功，149个有效speech token、正常EOS、5.96秒WAV，最低可用1,663 MB。v0.5.0 按句流水支持输入≤2000 UTF-16单元/128段，首句完成后开始播放、随后逐句释放模型；待播队列目标≤2秒/硬上限4秒。优化候选保持CPU High和两步Flow，只缩小补零尺寸、优化DSP，另提供2/4线程对照。详见 [句级流水、安卓参考与验收](docs/sentence-stream-v050.md)。它不是句内token级流式；时长、听感、RTF和内存稳定性仍须真机验证。
 - 已搭建 iOS 17+ SwiftUI 应用、MNN C++ 桥、模型文件检查、24 kHz 单声道分块播放与首包/RTF 指标框架。

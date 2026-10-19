@@ -17,6 +17,7 @@
 #include <functional>
 #include <iterator>
 #include <memory>
+#include <mutex>
 #include <numeric>
 #include <thread>
 #include <vector>
@@ -26,6 +27,8 @@ namespace {
 constexpr int kPromptFrames = 174;
 constexpr int kTargetTokens = 25;
 constexpr int kMaxSpeechTokens = 160;
+constexpr int kResidentFlowFrames = 384;
+constexpr int kResidentSpeechTokens = (kResidentFlowFrames-kPromptFrames)/2;
 constexpr int kSpeechOffset = 151924;
 constexpr int kSpeechEos = kSpeechOffset + 6562;
 constexpr int kSampleRate = 24000;
@@ -61,7 +64,9 @@ uint64_t footprintBytes() {
     return task_info(mach_task_self(), TASK_VM_INFO, reinterpret_cast<task_info_t>(&info), &count) == KERN_SUCCESS
         ? info.phys_footprint : 0;
 }
+struct MemorySampler;
 struct Trace {
+    MemorySampler *sampler = nullptr;
     NSString *fileName;
     explicit Trace(NSString *name = @"last-generation.log") : fileName(name) {}
     std::chrono::steady_clock::time_point start = std::chrono::steady_clock::now();
@@ -111,9 +116,27 @@ struct MemorySampler {
     ~MemorySampler() { running=false; if(worker.joinable())worker.join(); }
 };
 NSDictionary<NSString *, id> *result(bool ok, NSString *message, Trace &trace) {
+    if (trace.sampler) trace.sampler->stop(trace);
     return @{@"success": @(ok), @"message": message, @"peakFootprintMB": @(trace.peakMB),
              @"minAvailableMB": @(trace.minAvailableMB), @"logPath": documentPath(trace.fileName),
              @"wavPath": documentPath(@"last-generated.wav")};
+}
+bool waitAvailable(uint64_t minimum, Trace &trace, NSString *phase) {
+    auto start=std::chrono::steady_clock::now();
+    int passed=0;
+    while (secondsSince(start)<5.0) {
+        passed=os_proc_available_memory()>=minimum ? passed+1 : 0;
+        if (passed>=2) {
+            trace.record([NSString stringWithFormat:@"%@内存门槛通过：至少%.0f MB，等待%.3f秒",phase,minimum/1e6,secondsSince(start)]);
+            return true;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    }
+    trace.record([NSString stringWithFormat:@"%@等待5秒仍未达到%.0f MB，停止",phase,minimum/1e6]);
+    return false;
+}
+bool sampledBudgetOK(Trace &trace) {
+    return os_proc_available_memory()>=800000000ULL && (!trace.sampler || trace.sampler->available.load()>=800000000ULL);
 }
 bool readFloats(NSString *directory, NSString *name, size_t count, std::vector<float> &output) {
     NSData *data = [NSData dataWithContentsOfFile:[directory stringByAppendingPathComponent:name]];
@@ -169,7 +192,8 @@ float peak(const std::vector<float> &values) {
 
 bool generateSpeechTokens(NSString *directory, NSString *text, const std::vector<int> &prompt,
                           Trace &trace, std::vector<int> &speech, NSString **failure, int cpuThreads, bool *limitReached,
-                          bool residentProbe = false, const std::function<bool()> &whileLlmAlive = {}) {
+                          bool residentProbe = false, const std::function<bool()> &whileLlmAlive = {},
+                          bool retainedFlow = false, int speechLimit = kMaxSpeechTokens) {
     @autoreleasepool {
         NativeLogCapture nativeLog;
         if (!nativeLog.active) trace.record(@"警告：无法完整捕获 MNN 原始日志，仍将记录阶段与文件检查");
@@ -187,7 +211,7 @@ bool generateSpeechTokens(NSString *directory, NSString *text, const std::vector
         config[@"sampler_type"] = @"mixed";
         config[@"mixed_samplers"] = @[@"penalty", @"topK", @"topP", @"temperature"];
         config[@"repetition_penalty"] = @1.15;
-        config[@"max_new_tokens"] = @(kMaxSpeechTokens + 1);
+        config[@"max_new_tokens"] = @(speechLimit + 1);
         config[@"async"] = @NO;
         // MNN 3.6.1 uses base_dir + filename verbatim; absolute filenames here
         // would duplicate the directory. Metadata and embedding need the same
@@ -243,15 +267,16 @@ bool generateSpeechTokens(NSString *directory, NSString *text, const std::vector
         std::string templated = llm->apply_chat_template(userContent);
         auto input = llm->tokenizer_encode(templated.empty() ? userContent : templated);
         for (int token : prompt) input.push_back(token + kSpeechOffset);
-        const int outputLimit = residentProbe ? 2 : kMaxSpeechTokens + 1;
+        const int outputLimit = residentProbe ? 2 : speechLimit + 1;
         trace.record([NSString stringWithFormat:@"LLM 输入 %zu token（含 87 个音色提示 token）；开始 prefill+decode，最多 %d 个输出 token%@",
                       input.size(), outputLimit, residentProbe ? @"；共驻探针，不要求完整句 EOS" : @""]);
-        if (os_proc_available_memory() < 800000000ULL) {
+        if (!sampledBudgetOK(trace)) {
             *failure = @"LLM 前向前可用内存不足";
             return false;
         }
         started = std::chrono::steady_clock::now();
         auto output = llm->generate(input, outputLimit);
+        if (!sampledBudgetOK(trace)) { *failure=@"LLM前向期间可用内存或20ms采样低于800 MB，停止"; return false; }
         const auto *context = llm->getContext();
         bool eos = context && context->status == MNN::Transformer::LlmStatus::NORMAL_FINISHED;
         int invalidCount = 0;
@@ -264,11 +289,11 @@ bool generateSpeechTokens(NSString *directory, NSString *text, const std::vector
                       secondsSince(started), context ? context->prefill_us / 1e6 : 0.0,
                       context ? context->decode_us / 1e6 : 0.0, speech.size(), invalidCount,
                       eos ? @"是" : @"否", context ? int(context->status) : -1]);
-        if (speech.empty() || invalidCount || (!residentProbe && (!eos || speech.size() > kMaxSpeechTokens))) {
-            *limitReached = !invalidCount && speech.size() >= kMaxSpeechTokens && (!eos || speech.size() > kMaxSpeechTokens);
+        if (speech.empty() || invalidCount || (!residentProbe && (!eos || speech.size() > speechLimit))) {
+            *limitReached = !invalidCount && speech.size() >= speechLimit && (!eos || speech.size() > speechLimit);
             nativeLog.recordFailure(trace);
-            *failure = residentProbe ? @"共驻LLM的两步输出不是有效语音token，未执行共驻Flow" : (!eos || speech.size() > kMaxSpeechTokens
-                ? @"短句超过首版 160 speech token 上限（约 6.4 秒），未截断合成；请缩短文字"
+            *failure = residentProbe ? @"共驻LLM的两步输出不是有效语音token，未执行共驻Flow" : (!eos || speech.size() > speechLimit
+                ? [NSString stringWithFormat:@"短句超过%d speech token上限（约%.1f秒），未截断；请拆短",speechLimit,speechLimit/25.0]
                 : @"LLM 未生成有效的 speech token，未运行 Flow");
             return false;
         }
@@ -283,6 +308,11 @@ bool generateSpeechTokens(NSString *directory, NSString *text, const std::vector
         }
     }
     if (residentProbe) { trace.record(@"共驻探针 LLM 已销毁；Flow 仍保持，未套用普通串行 2500 MB 回收门槛"); return true; }
+    if (retainedFlow) {
+        trace.record(@"整句LLM已正常EOS并销毁；仅保留真实speech token与常驻Flow，不保留跨句KV");
+        if (!waitAvailable(1500000000ULL,trace,@"LLM释放后（Flow保留）")) { *failure=@"LLM释放后余量不足1500 MB，停止常驻链路";return false; }
+        return true;
+    }
     trace.record(@"LLM 已销毁；仅保留 speech token，开始观察内存回收");
     auto started = std::chrono::steady_clock::now();
     int passed = 0;
@@ -427,6 +457,7 @@ bool writeWav(const std::vector<float> &samples, NSString *fileName = @"last-gen
 @interface CosyVoiceGenerate ()
 + (NSDictionary<NSString *, id> *)runAtDirectory:(NSString *)directory text:(nullable NSString *)text lowPrecisionFlow:(BOOL)lowPrecision optimized:(BOOL)optimized cpuThreads:(NSInteger)threads;
 + (NSDictionary<NSString *, id> *)runAtDirectory:(NSString *)directory text:(nullable NSString *)text lowPrecisionFlow:(BOOL)lowPrecision optimized:(BOOL)optimized cpuThreads:(NSInteger)threads prepareHiFT:(BOOL)prepareHiFT;
++ (NSDictionary<NSString *, id> *)runAtDirectory:(NSString *)directory text:(nullable NSString *)text lowPrecisionFlow:(BOOL)lowPrecision optimized:(BOOL)optimized cpuThreads:(NSInteger)threads prepareHiFT:(BOOL)prepareHiFT resident:(Graph *)resident;
 @end
 
 @implementation CosyVoiceGenerate
@@ -462,8 +493,14 @@ bool writeWav(const std::vector<float> &samples, NSString *fileName = @"last-gen
 }
 
 + (NSDictionary<NSString *, id> *)runAtDirectory:(NSString *)directory text:(nullable NSString *)text lowPrecisionFlow:(BOOL)lowPrecision optimized:(BOOL)optimized cpuThreads:(NSInteger)threads prepareHiFT:(BOOL)prepareHiFT {
+    return [self runAtDirectory:directory text:text lowPrecisionFlow:lowPrecision optimized:optimized cpuThreads:threads prepareHiFT:prepareHiFT resident:nullptr];
+}
+
++ (NSDictionary<NSString *, id> *)runAtDirectory:(NSString *)directory text:(nullable NSString *)text lowPrecisionFlow:(BOOL)lowPrecision optimized:(BOOL)optimized cpuThreads:(NSInteger)threads prepareHiFT:(BOOL)prepareHiFT resident:(Graph *)resident {
     @autoreleasepool {
         Trace trace(prepareHiFT ? @"last-hift-precision.log" : @"last-generation.log");
+        std::unique_ptr<MemorySampler> sampling;
+        if (resident) { sampling.reset(new MemorySampler()); trace.sampler=sampling.get(); resident->traceLog=&trace; }
         const int cpuThreads = threads == 2 ? 2 : 4;
         NSString *flowLabel = lowPrecision ? @"Flow CPU Low" : @"Flow CPU High";
         const bool textGeneration = text != nil;
@@ -472,6 +509,7 @@ bool writeWav(const std::vector<float> &samples, NSString *fileName = @"last-gen
                       (textGeneration ? @"当前文字→手机 LLM" : @"固定 25 个 PC speech token（不运行手机文字 LLM）"), flowLabel], true);
         trace.record([NSString stringWithFormat:@"运行参数：%d CPU 线程；%@；模型精度和两步 Flow 不变",
                       cpuThreads, optimized ? @"优化候选（Flow 32 帧对齐、DSP 查表）" : @"v0.4.1 基线"]);
+        if(resident)trace.record(@"完整常驻入口：真实当前文字，每句重新prefill；唯一384帧Flow复用，最多105 speech token/4.2秒；LLM释放后才运行HiFT High");
         if (textGeneration) {
             text = [text stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
             if (text.length == 0 || text.length > 40) {
@@ -479,7 +517,8 @@ bool writeWav(const std::vector<float> &samples, NSString *fileName = @"last-gen
                 return result(false, @"请输入一条短句（首版最多 40 字符）；长句与流式尚待验证", trace);
             }
         }
-        if (os_proc_available_memory() < 2800000000ULL) {
+        if (resident && !waitAvailable(1500000000ULL,trace,@"常驻Flow下LLM加载前")) return result(false,@"常驻Flow下LLM加载前余量不足",trace);
+        if (!resident && os_proc_available_memory() < 2800000000ULL) {
             trace.record(@"停止：初始可用内存低于 2800 MB");
             return result(false, @"初始可用内存不足；未加载模型", trace);
         }
@@ -499,7 +538,7 @@ bool writeWav(const std::vector<float> &samples, NSString *fileName = @"last-gen
             speech.clear();
             NSString *failure = nil;
             bool limitReached = false;
-            if (!generateSpeechTokens(directory, text, tokens, trace, speech, &failure, cpuThreads, &limitReached)) {
+            if (!generateSpeechTokens(directory, text, tokens, trace, speech, &failure, cpuThreads, &limitReached,false,{},resident!=nullptr,resident?kResidentSpeechTokens:kMaxSpeechTokens)) {
                 trace.record([@"停止：" stringByAppendingString:failure ?: @"LLM 失败"]);
                 NSMutableDictionary *failed = [result(false, failure ?: @"LLM 失败", trace) mutableCopy];
                 failed[@"retrySplit"] = @(limitReached);
@@ -508,8 +547,9 @@ bool writeWav(const std::vector<float> &samples, NSString *fileName = @"last-gen
         }
         const int audioFrames = int(speech.size()) * 2;
         const int effectiveFrames = kPromptFrames + audioFrames;
-        const int flowFrames = optimized ? ((effectiveFrames + 31) / 32) * 32 :
-            (effectiveFrames <= 256 ? 256 : (effectiveFrames <= 384 ? 384 : 512));
+        const int flowFrames = resident ? kResidentFlowFrames : (optimized ? ((effectiveFrames + 31) / 32) * 32 :
+            (effectiveFrames <= 256 ? 256 : (effectiveFrames <= 384 ? 384 : 512)));
+        if(effectiveFrames>flowFrames)return result(false,@"Flow有效长度超出常驻桶，未执行前向",trace);
         const int stftFrames = audioFrames * 120 + 1;
         const double audioSeconds = double(audioFrames * kHop) / kSampleRate;
         trace.record([NSString stringWithFormat:@"目标 %zu speech token；有效 Mel %d 帧；Flow 图 %d 帧；目标音频 %.2f 秒",
@@ -547,13 +587,16 @@ bool writeWav(const std::vector<float> &samples, NSString *fileName = @"last-gen
         noise.clear(); noise.shrink_to_fit(); mu.clear(); mu.shrink_to_fit();
         std::vector<float> mask(flowFrames, 0);
         std::fill(mask.begin(), mask.begin() + effectiveFrames, 1.0f);
-        if (os_proc_available_memory() < 2500000000ULL) {
+        if (!resident && os_proc_available_memory() < 2500000000ULL) {
             trace.record(@"停止：Flow 加载前内存门槛未通过");
             return result(false, @"Flow 加载前可用内存不足", trace);
         }
         std::vector<float> mel(80 * audioFrames);
         {
-            Graph flow(cpuThreads, optimized);
+            std::unique_ptr<Graph> owned;
+            if(!resident)owned.reset(new Graph(cpuThreads,optimized));
+            Graph &flow=resident?*resident:*owned;
+            if (!resident) {
             if (!flow.open([directory stringByAppendingPathComponent:@"flow.cfg-student-2step.batch1.fp16.mnn"], false, trace, flowLabel, lowPrecision))
                 return result(false, @"Flow 会话失败", trace);
             if (!(flow.shape("x", {1, 80, flowFrames}) && flow.shape("mask", {1, 1, flowFrames}) &&
@@ -568,11 +611,15 @@ bool writeWav(const std::vector<float> &samples, NSString *fileName = @"last-gen
                 trace.record(@"安全停止：Flow resize 后可用内存低于 1200 MB；未前向");
                 return result(false, @"Flow resize 后内存不足，已安全停止", trace);
             }
+            } else {
+                trace.record(@"复用本批唯一384帧Flow会话；读取/创建/resize=0；全部六个输入仍逐步重传");
+            }
             const float midpoint = float(1.0 - std::cos(kPi / 4.0));
             for (int step = 0; step < 2; ++step) {
                 std::vector<float> time = {step == 0 ? 0.0f : midpoint};
                 trace.record([NSString stringWithFormat:@"%@ %d/2 开始；重新传入全部六个输入", flowLabel, step + 1]);
-                started = std::chrono::steady_clock::now();
+                if(resident&&!sampledBudgetOK(trace))return result(false,@"常驻Flow前向前余量或20ms采样不足800 MB",trace);
+                auto started = std::chrono::steady_clock::now();
                 if (!(flow.inputFloat("x", x) && flow.inputFloat("mask", mask) &&
                       flow.inputFloat("mu", paddedMu) && flow.inputFloat("spks", spks) &&
                       flow.inputFloat("cond", cond) && flow.inputFloat("t", time) && flow.run())) {
@@ -589,6 +636,7 @@ bool writeWav(const std::vector<float> &samples, NSString *fileName = @"last-gen
                 float delta = step == 0 ? midpoint : 1.0f - midpoint;
                 for (size_t index = 0; index < x.size(); ++index) x[index] += delta * velocity[index];
                 if (!finite(x)) return result(false, @"Flow 更新后含非有限值", trace);
+                if(resident&&!sampledBudgetOK(trace))return result(false,@"常驻Flow期间可用内存或20ms采样不足800 MB",trace);
                 trace.record([NSString stringWithFormat:@"Flow %d/2 完成 %.3f 秒；latent 峰值 %.5f",
                               step + 1, secondsSince(started), peak(x)]);
                 if (os_proc_available_memory() < 800000000ULL && step == 0) {
@@ -600,7 +648,7 @@ bool writeWav(const std::vector<float> &samples, NSString *fileName = @"last-gen
                 for (int frame = 0; frame < audioFrames; ++frame)
                     mel[channel * audioFrames + frame] = x[channel * flowFrames + kPromptFrames + frame];
         }
-        trace.record([NSString stringWithFormat:@"Flow 已释放；目标 Mel %d 帧，峰值 %.5f", audioFrames, peak(mel)]);
+        trace.record([NSString stringWithFormat:@"%@；目标 Mel %d 帧，峰值 %.5f",resident?@"Flow保留供下一句；LLM已销毁，开始HiFT High":@"Flow 已释放", audioFrames, peak(mel)]);
         if (os_proc_available_memory() < 1000000000ULL) {
             trace.record(@"安全停止：HiFT 前可用内存低于 1000 MB");
             return result(false, @"HiFT 前内存不足", trace);
@@ -715,6 +763,7 @@ bool writeWav(const std::vector<float> &samples, NSString *fileName = @"last-gen
         }
         }
         trace.record([NSString stringWithFormat:@"ISTFT DSP %.3f 秒", secondsSince(dspStarted)]);
+        if(resident&&!sampledBudgetOK(trace))return result(false,@"HiFT期间可用内存或20ms采样不足800 MB，停止常驻链路",trace);
         if (!finite(pcm)) return result(false, @"PCM 含非有限值", trace);
         double energy = 0;
         for (float value : pcm) energy += double(value) * value;
@@ -732,8 +781,11 @@ bool writeWav(const std::vector<float> &samples, NSString *fileName = @"last-gen
         completed[@"audioSeconds"] = @(audioSeconds);
         completed[@"generationSeconds"] = @(elapsed);
         completed[@"rtf"] = @(elapsed / audioSeconds);
+        completed[@"residentFlow"] = @(resident!=nullptr);
         return completed;
     }
 }
 #include "CosyVoiceOptimizationProbes.inc"
 @end
+
+#include "CosyVoiceResidentFlow.inc"

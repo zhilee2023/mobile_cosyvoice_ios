@@ -68,6 +68,11 @@ struct ContentView: View {
                         sentenceStream.start(text: text, directory: models.directory.path,
                                              optimized: optimizedSentences, threads: sentenceThreads, player: player)
                     }.disabled(!models.ready || generationRunning || probeRunning || memoryProbeRunning || demoRunning)
+                    Button("按句生成 · 常驻Flow384 · 新实验") {
+                        wavPlayer?.stop()
+                        sentenceStream.start(text: text, directory: models.directory.path,
+                                             optimized: true, threads: 4, player: player, resident: true)
+                    }.disabled(!models.ready || generationRunning || probeRunning || memoryProbeRunning || demoRunning)
                     Button("停止句级生成与播放") { sentenceStream.stop() }
                         .disabled(!sentenceStream.isRunning)
                     Text(sentenceStream.status).font(.caption).textSelection(.enabled)
@@ -75,9 +80,15 @@ struct ContentView: View {
                         .font(.caption)
                     Text("每句释放模型；最多保留一条待播句段。停止后当前短句推理会先返回再释放。RTF>1时仍可能句间等待，分句本身不保证实时。关闭优化并选4线程可对照旧链路；2线程需另测。")
                         .font(.caption).foregroundStyle(.secondary)
+                    Text("新常驻入口固定4线程/DSP优化，不受上方开关控制：本批只保留一个384帧Flow，每段最多105语音token/4.2秒；每句重做prefill，LLM销毁后才跑HiFT High。超长拆句重做、不截断。正常完成、失败、停止后均关闭Flow。完整链路共驻内存与RTF尚待真机验证。")
+                        .font(.caption).foregroundStyle(.secondary)
                     if FileManager.default.fileExists(atPath: SentenceStream.logURL.path) {
                         ShareLink("分享句级汇总日志", item: SentenceStream.logURL).disabled(generationRunning)
                         ShareLink("分享各句模型诊断", item: SentenceStream.documents.appendingPathComponent("last-sentence-diagnostics.log"))
+                            .disabled(generationRunning)
+                    }
+                    if FileManager.default.fileExists(atPath: SentenceStream.documents.appendingPathComponent("last-resident-lifecycle.log").path) {
+                        ShareLink("分享常驻Flow生命周期", item: SentenceStream.documents.appendingPathComponent("last-resident-lifecycle.log"))
                             .disabled(generationRunning)
                     }
                     if FileManager.default.fileExists(atPath: SentenceStream.audioURL.path) {

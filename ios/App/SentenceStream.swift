@@ -13,6 +13,7 @@ final class SentenceStream: ObservableObject {
     @Published private(set) var firstQueuedSeconds: Double?
     @Published private(set) var audioSeconds = 0.0
     @Published private(set) var computeSeconds = 0.0
+    @Published private(set) var startupSeconds = 0.0
     @Published private(set) var generatedCount = 0
     @Published private(set) var plannedCount = 0
     @Published private(set) var peakMB = 0.0
@@ -30,21 +31,22 @@ final class SentenceStream: ObservableObject {
     private var partialURL: URL { Self.documents.appendingPathComponent("last-sentence-stream.partial.wav") }
     private var diagnostics: URL { Self.documents.appendingPathComponent("last-sentence-diagnostics.log") }
 
-    func start(text: String, directory: String, optimized: Bool, threads: Int, player: ChunkPlayer) {
+    func start(text: String, directory: String, optimized: Bool, threads: Int, player: ChunkPlayer, resident: Bool = false) {
         guard !isRunning else { return }
         let plan: [String]
-        do { plan = try SentencePlanner.plan(text) }
+        do { plan = try SentencePlanner.plan(text, limit: resident ? 18 : SentencePlanner.defaultLimit) }
         catch { status = error.localizedDescription; return }
         player.stop()
         self.player = player
         isRunning = true; stopping = false; hasCompletedAudio = false
-        audioSeconds = 0; computeSeconds = 0; generatedCount = 0; plannedCount = plan.count
+        audioSeconds = 0; computeSeconds = 0; startupSeconds = 0; generatedCount = 0; plannedCount = plan.count
         firstQueuedSeconds = nil; peakMB = 0; minAvailableMB = .greatestFiniteMagnitude
         started = ProcessInfo.processInfo.systemUptime
         try? Data().write(to: Self.logURL, options: .atomic)
         try? Data().write(to: diagnostics, options: .atomic)
         record("开始句级流水：\(plan.count) 段；\(optimized ? "32 帧对齐/DSP 优化" : "v0.4.1 基线")；CPU \(threads) 线程；播放队列目标≤2秒、硬上限4秒；至多1句待播文件；不是 token 级流式")
-        task = Task { await run(plan: plan, directory: directory, optimized: optimized, threads: threads, player: player) }
+        record(resident ? "本批唯一Flow384常驻，固定4线程/DSP优化；每句重新prefill、释放LLM后运行HiFT High；每段最多105语音token/4.2秒，不保留跨句KV" : "对照版：每句释放全部模型，每段最多160语音token/6.4秒")
+        task = Task { await run(plan: plan, directory: directory, optimized: optimized, threads: threads, player: player, resident: resident) }
     }
 
     func stop() {
@@ -83,13 +85,29 @@ final class SentenceStream: ObservableObject {
         }
     }
 
-    private func infer(_ text: String, directory: String, optimized: Bool, threads: Int) async -> [String: Any] {
+    private func infer(_ text: String, directory: String, optimized: Bool, threads: Int, session: CosyVoiceResidentFlow?) async -> [String: Any] {
         await withCheckedContinuation { continuation in
             worker.async {
-                let result = CosyVoiceGenerate.generateText(text, atDirectory: directory, optimized: optimized, cpuThreads: threads)
+                let result = session?.generateText(text) ?? CosyVoiceGenerate.generateText(text, atDirectory: directory, optimized: optimized, cpuThreads: threads)
                 continuation.resume(returning: result)
             }
         }
+    }
+
+    private func beginResident(_ directory: String) async -> [String: Any] {
+        await withCheckedContinuation { continuation in
+            worker.async { continuation.resume(returning: CosyVoiceResidentFlow.begin(atDirectory: directory)) }
+        }
+    }
+
+    private func closeResident(_ session: CosyVoiceResidentFlow) async {
+        // Cleanup must still run when the enclosing Task has been cancelled.
+        let output: [String: Any] = await withCheckedContinuation { continuation in
+            worker.async { continuation.resume(returning: session.close()) }
+        }
+        peakMB = max(peakMB, output["peakFootprintMB"] as? Double ?? 0)
+        minAvailableMB = min(minAvailableMB, output["minAvailableMB"] as? Double ?? .greatestFiniteMagnitude)
+        record("本批唯一Flow已关闭；生命周期见 last-resident-lifecycle.log")
     }
 
     private func memoryGate() async throws {
@@ -153,8 +171,9 @@ final class SentenceStream: ObservableObject {
         return Double(input.length) / 24_000
     }
 
-    private func run(plan: [String], directory: String, optimized: Bool, threads: Int, player: ChunkPlayer) async {
+    private func run(plan: [String], directory: String, optimized: Bool, threads: Int, player: ChunkPlayer, resident: Bool) async {
         var writer: AVAudioFile?
+        var residentSession: CosyVoiceResidentFlow?
         // Only these two app-owned scratch files can be replaced/removed here.
         let slots = (0...1).map { Self.documents.appendingPathComponent("sentence-stream-slot-\($0).wav") }
         defer {
@@ -165,6 +184,20 @@ final class SentenceStream: ObservableObject {
         var pending = plan.map { (text: $0, depth: 0) }
         var at = 0
         do {
+            if resident {
+                let begin = ProcessInfo.processInfo.systemUptime
+                let setup = await beginResident(directory)
+                startupSeconds = ProcessInfo.processInfo.systemUptime - begin
+                computeSeconds += startupSeconds
+                residentSession = setup["session"] as? CosyVoiceResidentFlow
+                peakMB = max(peakMB, setup["peakFootprintMB"] as? Double ?? 0)
+                minAvailableMB = min(minAvailableMB, setup["minAvailableMB"] as? Double ?? .greatestFiniteMagnitude)
+                guard setup["success"] as? Bool == true, residentSession != nil else {
+                    throw SentenceStreamError.failed(setup["message"] as? String ?? "常驻Flow初始化失败。")
+                }
+                record(String(format: "常驻初始化 %.3f 秒，计入总计算RTF；后续句段读取/创建/resize=0", startupSeconds))
+                try Task.checkCancellation()
+            }
             writer = try AVAudioFile(forWriting: partialURL,
                 settings: [AVFormatIDKey: kAudioFormatLinearPCM, AVSampleRateKey: 24_000,
                            AVNumberOfChannelsKey: 1, AVLinearPCMBitDepthKey: 16,
@@ -172,11 +205,11 @@ final class SentenceStream: ObservableObject {
                 commonFormat: .pcmFormatFloat32, interleaved: false)
             while at < pending.count {
                 try Task.checkCancellation()
-                try await memoryGate()
+                if !resident { try await memoryGate() }
                 status = "生成第 \(at + 1)/\(pending.count) 段；已生成 \(String(format: "%.2f", audioSeconds)) 秒，上一句可同时播放。"
                 record("句 \(at + 1)/\(pending.count) 开始，\(pending[at].text.utf16.count) UTF-16 单元")
                 let begin = ProcessInfo.processInfo.systemUptime
-                let output = await infer(pending[at].text, directory: directory, optimized: optimized, threads: threads)
+                let output = await infer(pending[at].text, directory: directory, optimized: optimized, threads: threads, session: residentSession)
                 let elapsed = ProcessInfo.processInfo.systemUptime - begin
                 computeSeconds += elapsed
                 peakMB = max(peakMB, output["peakFootprintMB"] as? Double ?? 0)
@@ -212,6 +245,11 @@ final class SentenceStream: ObservableObject {
                 playbackTask = Task { try await self.feed(slot, player: player) }
                 at += 1
             }
+            if let session = residentSession {
+                await closeResident(session)
+                residentSession = nil
+                record(String(format: "常驻稳态：句段计算 %.3f秒（含失败重试，不含初始化），稳态计算RTF %.3f；初始化 %.3f秒已计入总计算RTF", computeSeconds-startupSeconds, (computeSeconds-startupSeconds)/audioSeconds, startupSeconds))
+            }
             writer = nil // Finalize WAV header before publishing completed audio.
             if FileManager.default.fileExists(atPath: Self.audioURL.path) {
                 _ = try FileManager.default.replaceItemAt(Self.audioURL, withItemAt: partialURL)
@@ -233,5 +271,6 @@ final class SentenceStream: ObservableObject {
             status = stopping ? "已停止；当前模型已返回，未继续生成。" : "停止：\(error.localizedDescription)"
             record(status + "；已生成部分仍保留为 partial 文件，不冒充整篇完成")
         }
+        if let session = residentSession { await closeResident(session) }
     }
 }
