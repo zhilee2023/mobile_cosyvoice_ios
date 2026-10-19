@@ -36,7 +36,9 @@ enum ExperimentCatalog {
         .init(id: "two-sentence-staged", title: "两句分阶段／唯一 Flow", state: .archived,
               conclusion: "v0.7.3真机两次完成，计算RTF 1.744/1.668，峰值约1.61 GB；每三句仍创建两次Flow，首块约6.5秒。", execution: .sentence),
         .init(id: "three-sentence-staged", title: "三句分阶段／唯一 Flow（新对照）", state: .available,
-              conclusion: "最新三句8.52秒音频，计算RTF1.518、首块7.95秒、最低余量1601MB，未观察到断供；更长文本仍待验收。", execution: .sentence),
+              conclusion: "build22三句8.48秒音频，完整计算RTF1.397、首块7.11秒、最低余量1466MB、断供0；现在与六句批量对照长文。", execution: .sentence),
+        .init(id: "six-sentence-staged", title: "六句一批／长文摊销对照", state: .available,
+              conclusion: "只将有界token队列从3句增至6句；释放LLM后复用唯一Flow384，HiFT逐句处理。首块可能更晚；未保证更快或长文通过。", execution: .sentence),
         .init(id: "flow-metal-low-memory-256", title: "Metal Low 256帧会话内存", state: .archived,
               conclusion: "v0.7.5两次主后端Metal，峰值2062–2092MB、最低余量1129–1159MB；仅resize通过，尚无GPU前向结果。"),
         .init(id: "flow-metal-low-256", title: "GPU 256帧两步Flow", state: .archived,
@@ -45,10 +47,16 @@ enum ExperimentCatalog {
               conclusion: "v0.7.6第一步25120/30720个值NaN，有效314帧均受影响；最低余量1106MB，未形成有效GPU测速。"),
         .init(id: "flow-metal-nan", title: "GPU 首个 NaN 算子定位", state: .archived,
               conclusion: "v0.7.7第三个Transformer块QK乘法有限输入→大量Inf，随后Softmax首次NaN；定位完成，最低余量1108MB。"),
-        .init(id: "flow-metal-hybrid-256", title: "① GPU主干＋FP32注意力 · 256帧", state: .available,
-              conclusion: "Metal Low主干，CPU FP32重算QK+mask+Softmax；两步与CPU High数值对照；先冷启动测本项。"),
-        .init(id: "flow-metal-hybrid-384", title: "② GPU主干＋FP32注意力 · 384帧", state: .available,
-              conclusion: "同一混合实现，固定70个token；256帧有限且内存通过后冷启动测；不是纯GPU或整链RTF。")
+        .init(id: "flow-metal-hybrid-256", title: "混合GPU · 256帧", state: .archived,
+              conclusion: "build22多次有限且重复L2=0，但预热两步约1.90秒/目标1秒，峰值2086–2121MB；非有利长度，CPU正确性对照仍未验收，不重复测速。"),
+        .init(id: "flow-cpu-reference-384", title: "① CPU独立参考 · 384帧", state: .available,
+              conclusion: "冷启动测，保存同版本/输入SHA256/文件身份/目标Mel，之后冷启动运行②；不在GPU释放后再加载CPU。"),
+        .init(id: "flow-metal-hybrid-384", title: "② GPU混合 · 384帧／对照CPU", state: .available,
+              conclusion: "build22两步约2.63–2.75秒；此版只读取①的匹配CPU结果，无第二套模型；先确认数值与内存。"),
+        .init(id: "flow-cpu-reference-512", title: "③ CPU长负载参考 · 512帧", state: .available,
+              conclusion: "74个真实token重复两次，共148 token/5.92秒等效负载；是容量/吞吐测试，不是自然长句。冷启动测。"),
+        .init(id: "flow-metal-hybrid-512", title: "④ GPU混合长负载 · 512帧", state: .available,
+              conclusion: "先③，再冷启动测；FP32注意力保持原实现，首次/预热和Flow-only RTF分列；800MB底线不变，不保证能前向。")
     ]
     static var available: [Route] { routes.filter { $0.state == .available } }
     static var archived: [Route] { routes.filter { $0.state == .archived } }

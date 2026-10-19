@@ -40,6 +40,12 @@ struct ContentView: View {
                 }
                 Section("输入与生成") {
                     TextEditor(text: $text).frame(minHeight: 110).disabled(busy)
+                    HStack {
+                        Button("载入12句 · 约30秒") { text = LongTextBenchmarks.text(passages: 1) }
+                        Button("载入24句 · 约60秒") { text = LongTextBenchmarks.text(passages: 2) }
+                    }.disabled(busy)
+                    Text("预估时长不是目标时长，实际由LLM正常EOS决定。用相同文本分别测三句/六句批量；预置文本会替换当前输入。")
+                        .font(.caption).foregroundStyle(.secondary)
                     Text("长文≤2000 UTF-16单元；自动拆句，不截断冒充读完。单句按钮≤40单元。")
                         .font(.caption).foregroundStyle(.secondary)
                     Toggle("HiFT core Low", isOn: $lowHiFT).disabled(busy)
@@ -70,7 +76,7 @@ struct ContentView: View {
                     Button("当前路线返回后停止") { experiments.stop() }
                         .disabled(!experiments.isRunning)
                     Text(experiments.status).font(.caption).textSelection(.enabled)
-                    Text("分别冷启动，先256帧再384帧。Metal Low主干＋CPU FP32注意力，局部重算QK/掩码/Softmax；两步耗时包含复制、同步与CPU计算。结果汇入同一个报告。")
+                    Text("每项分别冷启动，按①CPU384→②GPU384→③CPU512→④GPU512测。GPU只读取匹配的CPU结果，不再等待GPU回收后加载CPU。512帧是重复token容量负载，不生成音频。")
                         .font(.caption).foregroundStyle(.secondary)
                     Text("每步必须完成22层注意力回传；前向前余量1100 MB，20ms采样底线800 MB。先验证有限值、CPU偏差和模块速度；整链RTF与试听尚待验证。")
                         .font(.caption).foregroundStyle(.secondary)
@@ -86,9 +92,9 @@ struct ContentView: View {
                         Text(route.title)
                         Text(route.conclusion).font(.caption).foregroundStyle(.secondary)
                     }
-                    Text("三句对照使用完整EOS、Flow High两步与HiFT Low；20ms采样最低余量800 MB不降低。首句要等三句token生成后才能入队。")
+                    Text("三句/六句对照均使用完整EOS、Flow High两步与HiFT Low；800MB底线不降低。只预存小批token，不将整批WAV保存在内存；六句首块可能更晚。")
                         .font(.caption).foregroundStyle(.secondary)
-                    Text("请冷启动、保持默认三句文本与4线程，运行本对照两次，再分享一个统一报告。比较初始化/失败/释放均计入的RTF、首块入队、断供、最低余量及Flow创建次数。历史两句结果仅供参考；仍是句级播放。")
+                    Text("先载入12句，分别冷启动测三句批量和六句批量；通过后再用24句复测。每3句记录累计RTF、温度和内存；最终RTF计入初始化/失败/释放，结果仍只分享一个统一报告。")
                         .font(.caption).foregroundStyle(.secondary)
                 }
                 Section("统一测试报告 · 只发这一个") {

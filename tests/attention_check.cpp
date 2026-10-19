@@ -26,5 +26,8 @@ int main() {
     q[0]=std::numeric_limits<float>::quiet_NaN();
     require(!CosyVoiceAttention::probabilities(q,k,mask,2,2,2,out));
     require(!CosyVoiceAttention::probabilities({},k,mask,2,2,2,out));
+    require(CosyVoiceAttention::probabilities(std::vector<float>(512*2,0),std::vector<float>(512*2,0),std::vector<float>(512*512,0),1,512,2,out));
+    require(out.size()==512*512 && out.front()==1.f/512 && out.back()==1.f/512);
+    require(!CosyVoiceAttention::probabilities({}, {}, {}, 16, 1025, 64, out));
     std::cout << "PASS: FP32 large-logit attention, stable normalization, layout and mask broadcasting\n";
 }

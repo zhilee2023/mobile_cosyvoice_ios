@@ -19,7 +19,7 @@ jobs:
       - name: Check sentence planning and DSP math
         run: |
           mkdir -p build-tests
-          swiftc ios/App/SentencePlanner.swift tests/SentencePlannerChecks.swift -o build-tests/sentence-check
+          swiftc ios/App/SentencePlanner.swift ios/App/LongTextBenchmarks.swift tests/SentencePlannerChecks.swift -o build-tests/sentence-check
           build-tests/sentence-check
           swiftc ios/App/TestReportArchive.swift tests/TestReportArchiveChecks.swift -o build-tests/report-check
           build-tests/report-check
@@ -36,6 +36,8 @@ jobs:
           build-tests/budget-check
           clang++ -O2 -std=c++17 -Iios/Bridge -framework Accelerate tests/attention_check.cpp -o build-tests/attention-check
           build-tests/attention-check
+          clang++ -O2 -std=c++17 -Iios/Bridge tests/reference_check.cpp -o build-tests/reference-check
+          build-tests/reference-check
       - name: Build pinned MNN 3.6.1 for iOS
         run: |
           git clone --depth 1 --branch 3.6.1 https://github.com/alibaba/MNN.git MNN

@@ -33,6 +33,15 @@ struct SentencePlannerChecks {
         precondition(resident.count == 3) // Identical default 3-sentence fixture across both new routes.
         let singleButtonPlan = try SentencePlanner.plan(residentText, limit: 40)
         precondition(singleButtonPlan.count == 3)
+        for (passages, count) in [(1, 12), (2, 24)] {
+            let text = LongTextBenchmarks.text(passages: passages)
+            let plan = try SentencePlanner.plan(text, limit: 18)
+            precondition(plan.count == count && plan.joined() == text)
+            precondition(plan.allSatisfy { $0.utf16.count <= 18 })
+        }
+        precondition(LongTextBenchmarks.batchLimit("three-sentence-staged") == 3)
+        precondition(LongTextBenchmarks.batchLimit("six-sentence-staged") == 6)
+        precondition(LongTextBenchmarks.batchLimit(nil) == 0)
         print("PASS: sentence splitting preserves content, bounds UTF-16, handles emoji/newlines/decimals/retry limits")
     }
 }

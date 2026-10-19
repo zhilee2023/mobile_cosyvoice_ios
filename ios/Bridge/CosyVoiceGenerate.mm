@@ -1,6 +1,7 @@
 #import "CosyVoiceGenerate.h"
 #include "CosyVoiceDSP.hpp"
 #include "CosyVoiceStableAttention.hpp"
+#include "CosyVoiceReference.hpp"
 #include "CosyVoiceProbeMetrics.hpp"
 #include "CosyVoiceBudget.hpp"
 #include "CosyVoiceFailure.hpp"
@@ -641,6 +642,8 @@ bool writeWav(const std::vector<float> &samples, NSString *fileName = @"last-gen
         trace.record([NSString stringWithFormat:@"目标 %zu speech token；有效 Mel %d 帧；Flow 图 %d 帧；目标音频 %.2f 秒",
                       speech.size(), effectiveFrames, flowFrames, audioSeconds]);
         tokens.insert(tokens.end(), speech.begin(), speech.end());
+        NSMutableDictionary *stageSeconds = [NSMutableDictionary dictionary];
+        auto stageStarted = std::chrono::steady_clock::now();
         std::vector<float> mu;
         {
             Graph conditioner(cpuThreads, optimized);
@@ -656,6 +659,7 @@ bool writeWav(const std::vector<float> &samples, NSString *fileName = @"last-gen
             }
             trace.record([NSString stringWithFormat:@"Conditioner 完成：%d 帧；峰值 %.5f", effectiveFrames, peak(mu)]);
         }
+        stageSeconds[@"conditioner"] = @(secondsSince(stageStarted));
         std::vector<float> noise, promptCond, spks;
         if (!readFloats(directory, @"rand-noise.bin", 80 * 15000, noise) ||
             !readFloats(directory, @"prompt-cond.bin", 80 * kPromptFrames, promptCond) ||
@@ -685,6 +689,7 @@ bool writeWav(const std::vector<float> &samples, NSString *fileName = @"last-gen
             return memoryResult(@"Flow 加载前可用内存不足", trace);
         }
         std::vector<float> mel(80 * audioFrames);
+        stageStarted = std::chrono::steady_clock::now();
         {
             std::unique_ptr<Graph> owned;
             if(!resident)owned.reset(new Graph(cpuThreads,optimized));
@@ -757,6 +762,8 @@ bool writeWav(const std::vector<float> &samples, NSString *fileName = @"last-gen
                     mel[channel * audioFrames + frame] = x[channel * flowFrames + kPromptFrames + frame];
         }
         trace.record([NSString stringWithFormat:@"%@；目标 Mel %d 帧，峰值 %.5f",resident?@"Flow保留供下一句；LLM已销毁，开始HiFT":@"Flow 已释放", audioFrames, peak(mel)]);
+        stageSeconds[@"flowSetupTwoStepsRelease"] = @(secondsSince(stageStarted));
+        stageStarted = std::chrono::steady_clock::now();
         if (os_proc_available_memory() < 1000000000ULL) {
             trace.record(@"安全停止：HiFT 前可用内存低于 1000 MB");
             return memoryResult(@"HiFT 前内存不足", trace);
@@ -772,6 +779,8 @@ bool writeWav(const std::vector<float> &samples, NSString *fileName = @"last-gen
                 return result(false, @"HiFT F0 前向失败", trace);
             trace.record([NSString stringWithFormat:@"HiFT F0 完成；峰值 %.5f", peak(f0)]);
         }
+        stageSeconds[@"f0"] = @(secondsSince(stageStarted));
+        stageStarted = std::chrono::steady_clock::now();
         std::vector<float> weights, bias;
         if (!readFloats(directory, @"source-linear-weight.bin", 9, weights) ||
             !readFloats(directory, @"source-linear-bias.bin", 1, bias))
@@ -816,6 +825,7 @@ bool writeWav(const std::vector<float> &samples, NSString *fileName = @"last-gen
         }
         }
         source.clear(); source.shrink_to_fit();
+        stageSeconds[@"sourceAndSTFT"] = @(secondsSince(stageStarted));
         trace.record([NSString stringWithFormat:@"HiFT source STFT 完成；峰值 %.5f", peak(stft)]);
         trace.record([NSString stringWithFormat:@"STFT DSP %.3f 秒", secondsSince(dspStarted)]);
         if (prepareHiFT) {
@@ -827,6 +837,7 @@ bool writeWav(const std::vector<float> &samples, NSString *fileName = @"last-gen
         }
         if (os_proc_available_memory() < 1000000000ULL) return memoryResult(@"HiFT core 前内存不足", trace);
         std::vector<float> spectral;
+        stageStarted = std::chrono::steady_clock::now();
         {
             Graph graph(cpuThreads, optimized);
             if (!graph.open([directory stringByAppendingPathComponent:@"hift-core.fp32.mnn"], false, trace, lowHiFT?@"HiFT core Low":@"HiFT core High", lowHiFT))
@@ -841,6 +852,7 @@ bool writeWav(const std::vector<float> &samples, NSString *fileName = @"last-gen
                 return result(false, @"HiFT core 前向失败", trace);
             trace.record([NSString stringWithFormat:@"HiFT core 完成；频谱峰值 %.5f", peak(spectral)]);
         }
+        stageSeconds[@"hiFTCoreSetupRunRelease"] = @(secondsSince(stageStarted));
         dspStarted = std::chrono::steady_clock::now();
         std::vector<float> pcm(audioFrames * kHop);
         if (optimized) {
@@ -872,6 +884,7 @@ bool writeWav(const std::vector<float> &samples, NSString *fileName = @"last-gen
         }
         }
         trace.record([NSString stringWithFormat:@"ISTFT DSP %.3f 秒", secondsSince(dspStarted)]);
+        stageSeconds[@"istft"] = @(secondsSince(dspStarted));
         if(!sampledBudgetOK(trace))return result(false,@"HiFT期间可用内存或20ms采样不足800 MB，停止链路",trace);
         if (!finite(pcm)) return result(false, @"PCM 含非有限值", trace);
         double energy = 0;
@@ -897,6 +910,8 @@ bool writeWav(const std::vector<float> &samples, NSString *fileName = @"last-gen
         completed[@"eosSource"] = prepared ? @"prepared-complete-LLM-output" : (textGeneration ? @"current-LLM-request" : @"fixed-prefix-fixture-not-verified");
         completed[@"llmMetrics"] = llmMetrics;
         completed[@"llmHeldForFlow"] = @(llmHeldForFlow);
+        completed[@"stageSeconds"] = stageSeconds;
+        completed[@"stageSecondsScope"] = @"partial acoustic breakdown; total generationSeconds additionally includes LLM, input loading, waits and WAV writing; retained Flow setup is in outer call";
         return completed;
     }
 }

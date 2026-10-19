@@ -29,7 +29,7 @@ bool runMetalWithFP32Attention(Graph &flow, Trace &trace, NSMutableDictionary *m
                 if (haveQK || haveMask || inputs.size()!=2) { failure=@"注意力QK回调顺序或数量不符"; return true; }
                 const auto qs=inputs[0]->shape(), ks=inputs[1]->shape();
                 if (qs.size()!=4 || ks.size()!=4 || qs[0]!=1 || ks[0]!=1 || qs[1]!=16 || ks[1]!=16 ||
-                    (qs[2]!=256 && qs[2]!=384) || qs[3]!=64 || ks[2]!=64 || ks[3]!=qs[2]) {
+                    (qs[2]!=256 && qs[2]!=384 && qs[2]!=512) || qs[3]!=64 || ks[2]!=64 || ks[3]!=qs[2]) {
                     failure=@"Q/K形状不符合本固定实验，未猜测布局"; return true;
                 }
                 heads=qs[1]; frames=qs[2]; dimension=qs[3];

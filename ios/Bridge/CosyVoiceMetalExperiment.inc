@@ -1,10 +1,13 @@
 // Included in runExperiment after its report, sampler and prompt are ready.
-// Each button owns one Metal session, then destroys it before CPU reference.
-if ([route hasPrefix:@"flow-metal-low-"] || [route hasPrefix:@"flow-metal-hybrid-"] || [route isEqual:@"flow-metal-nan"]) {
+// New buttons own ONE backend; GPU reads a matched cold-start CPU report.
+// Historical raw-GPU routes retain their old sequential-reference behavior.
+if ([route hasPrefix:@"flow-metal-low-"] || [route hasPrefix:@"flow-metal-hybrid-"] || [route hasPrefix:@"flow-cpu-reference-"] || [route isEqual:@"flow-metal-nan"]) {
     const bool diagnose = [route isEqual:@"flow-metal-nan"];
     const bool hybrid = [route hasPrefix:@"flow-metal-hybrid-"];
-    const int frames = diagnose || [route hasSuffix:@"256"] ? 256 : 384;
-    const int speechCount = frames == 256 ? 25 : 70;
+    const bool cpuOnly = [route hasPrefix:@"flow-cpu-reference-"];
+    const bool splitReference = cpuOnly || hybrid;
+    const int frames = [route hasSuffix:@"512"] ? 512 : (diagnose || [route hasSuffix:@"256"] ? 256 : 384);
+    const int speechCount = frames == 512 ? 148 : (frames == 256 ? 25 : 70);
     const int targetFrames = 2 * speechCount;
     const int effective = kPromptFrames + targetFrames;
     NSString *flowPath = [directory stringByAppendingPathComponent:@"flow.cfg-student-2step.batch1.fp16.mnn"];
@@ -13,7 +16,9 @@ if ([route hasPrefix:@"flow-metal-low-"] || [route hasPrefix:@"flow-metal-hybrid
         return finish(false, @"Flow外部权重缺失或为空，未运行GPU");
 
     std::vector<int> tokens = prompt;
-    tokens.insert(tokens.end(), std::begin(kProbeSpeechTokens), std::begin(kProbeSpeechTokens) + speechCount);
+    // 512 is a REPEATED-token capacity fixture, not a natural long utterance.
+    // The full-text sentence routes below are the audible long-text tests.
+    for (int i = 0; i < speechCount; ++i) tokens.push_back(kProbeSpeechTokens[i % std::size(kProbeSpeechTokens)]);
     std::vector<float> mu, noise, promptCond, spks;
     {
         Graph conditioner(4, true);
@@ -38,14 +43,46 @@ if ([route hasPrefix:@"flow-metal-low-"] || [route hasPrefix:@"flow-metal-hybrid
     }
     std::fill(mask.begin(), mask.begin() + effective, 1.0f);
     noise.clear(); noise.shrink_to_fit(); mu.clear(); mu.shrink_to_fit();
-    trace.record([NSString stringWithFormat:@"固定%d个speech token；有效%d帧→%d帧；Metal Low NoTune先测3轮两步，再释放GPU测同输入CPU High；不运行LLM或HiFT", speechCount, effective, frames]);
+    trace.record([NSString stringWithFormat:@"固定%d个speech token；有效%d帧→%d帧；本次仅一个后端、3轮两步；不运行LLM或HiFT；512帧为74-token重复两次的容量负载，非长句音质验收", speechCount, effective, frames]);
     if (hybrid) trace.record(@"混合候选：Metal Low主干；每层QK+mask+Softmax由CPU FP32重算后回传概率；复制/同步/BLAS均计入两步wall");
+
+    NSMutableDictionary *stamps = [NSMutableDictionary dictionary];
+    for (NSString *name in @[@"flow.cfg-student-2step.batch1.fp16.mnn", @"flow.cfg-student-2step.batch1.fp16.mnn.weight", @"flow-conditioner.fp32.mnn", @"prompt-speech-tokens.csv", @"rand-noise.bin", @"prompt-cond.bin", @"spks.bin"]) {
+        NSDictionary *attributes = [NSFileManager.defaultManager attributesOfItemAtPath:[directory stringByAppendingPathComponent:name] error:nil];
+        if ([attributes[NSFileSize] unsignedLongLongValue] == 0) return finish(false, @"参考身份检查：模型或输入文件缺失");
+        stamps[name] = @{@"bytes": attributes[NSFileSize], @"modifiedEpoch": @([attributes[NSFileModificationDate] timeIntervalSince1970])};
+    }
+    const auto inputIdentity = CosyVoiceReference::digest(initial, paddedMu, cond, mask, spks);
+    NSString *digest = [NSString stringWithUTF8String:inputIdentity.c_str()];
+    NSString *fixture = [NSString stringWithFormat:@"%@%d-prompt87-effective%d-noise-v1-f32-native", frames == 512 ? @"repeated74x2-" : @"real", speechCount, effective];
+    NSDictionary *savedRow = nil;
+    NSString *referenceRoute = [NSString stringWithFormat:@"flow-cpu-reference-%d", frames];
+    if (hybrid && splitReference) {
+        NSData *data = [NSData dataWithContentsOfFile:documentPath([NSString stringWithFormat:@"last-experiment-%@.json", referenceRoute])];
+        id parsed = data ? [NSJSONSerialization JSONObjectWithData:data options:0 error:nil] : nil;
+        NSDictionary *saved = [parsed isKindOfClass:NSDictionary.class] ? parsed : nil;
+        NSArray *savedRows = [saved[@"rows"] isKindOfClass:NSArray.class] ? saved[@"rows"] : @[];
+        if ([saved[@"success"] boolValue] && [saved[@"version"] isEqual:[NSBundle.mainBundle objectForInfoDictionaryKey:@"CFBundleShortVersionString"]] &&
+            [saved[@"build"] isEqual:[NSBundle.mainBundle objectForInfoDictionaryKey:@"CFBundleVersion"]] && savedRows.count == 1) {
+            NSDictionary *candidate = [savedRows[0] isKindOfClass:NSDictionary.class] ? savedRows[0] : nil;
+            if ([candidate[@"fixtureID"] isEqual:fixture] && [candidate[@"inputSHA256"] isEqual:digest] &&
+                [candidate[@"modelFileStamps"] isEqual:stamps] && [candidate[@"frames"] intValue] == frames &&
+                [candidate[@"backend"] intValue] == 0 && [candidate[@"completedRuns"] intValue] == 3 &&
+                [candidate[@"status"] isEqual:@"finite-repeat-pass"] &&
+                [candidate[@"melShape"] isEqual:@[@80, @(targetFrames)]] &&
+                [candidate[@"byteOrder"] isEqual:@"little-endian"] &&
+                [candidate[@"melF32Base64"] isKindOfClass:NSString.class]) savedRow = candidate;
+        }
+        if (!savedRow) return finish(false, [NSString stringWithFormat:@"请先冷启动完成CPU参考%d帧，再冷启动测本GPU项；要求同版本/输入SHA256/文件时间与大小一致，不复用旧参考", frames]);
+    }
 
     std::vector<float> gpuMel, cpuMel;
     auto runBackend = [&](bool metal, std::vector<float> &mel) -> bool {
         NSMutableDictionary *row = [@{@"backendRequested": metal ? @"Metal" : @"CPU", @"requestedPrecision": metal ? @"Low" : @"High",
             @"frames": @(frames), @"speechTokens": @(speechCount), @"audioSeconds": @(speechCount / 25.0),
             @"wholeChainRTFMeasured": @NO, @"status": @"started", @"completedRuns": @0,
+            @"fixtureID": fixture, @"inputSHA256": digest, @"modelFileStamps": stamps,
+            @"fixtureIsRepeatedCapacityLoad": @(frames == 512),
             @"attentionMode": metal && hybrid ? @"CPU FP32 QK-mask-softmax" : @"original graph",
             @"runIncludesAttentionCallbacks": @(metal && hybrid),
             @"thermalStart": @(NSProcessInfo.processInfo.thermalState)} mutableCopy];
@@ -151,16 +188,22 @@ if ([route hasPrefix:@"flow-metal-low-"] || [route hasPrefix:@"flow-metal-hybrid
             }
             row[@"warmTwoStepsMeanSeconds"] = @(warmSeconds / 2);
             row[@"repeatRelativeL2"] = @(repeatL2);
-            row[@"fixtureID"] = [NSString stringWithFormat:@"real%d-prompt87-effective%d-noise-v1-f32-native", speechCount, effective];
             row[@"melShape"] = @[@80, @(targetFrames)];
             row[@"byteOrder"] = @"little-endian";
             row[@"melF32Base64"] = [[NSData dataWithBytes:mel.data() length:mel.size() * sizeof(float)] base64EncodedStringWithOptions:0];
             row[@"status"] = repeatL2 <= 1e-3 ? @"finite-repeat-pass" : @"repeat-divergence";
+            const double duration = speechCount / 25.0;
+            row[@"warmFlowOnlyRTF"] = @(warmSeconds / 2 / duration);
+            row[@"coldFlowOnlyRTF"] = @(([row[@"loadCreateSeconds"] doubleValue] + [row[@"resizeSeconds"] doubleValue] + [row[@"firstTwoStepsSeconds"] doubleValue]) / duration);
             return repeatL2 <= 1e-3;
         }();
         trace.record(metal ? @"本路线唯一Metal会话已释放；无LLM/HiFT共驻" : @"CPU参考会话已释放");
         return finalizeRow(ok);
     };
+    if (cpuOnly) {
+        const bool ok = runBackend(false, cpuMel);
+        return finish(ok, ok ? @"独立CPU参考完成；输入SHA256/文件身份/完整目标Mel与首次预热耗时已保存；请冷启动再测相同帧数GPU，不必共享模型内存" : @"CPU参考未通过；不供GPU数值对照");
+    }
     if (!waitAvailable(2900000000ULL, trace, @"Metal独立会话前")) return finish(false, @"请冷启动单独测；未加载GPU");
     const bool gpuOK = runBackend(true, gpuMel);
     if (diagnose) {
@@ -168,6 +211,21 @@ if ([route hasPrefix:@"flow-metal-low-"] || [route hasPrefix:@"flow-metal-hybrid
         return finish([diagnostic[@"completed"] boolValue], [NSString stringWithFormat:@"GPU算子定位：%@；仅诊断完成状态，不表示GPU数值通过；请分享统一报告", diagnostic[@"stopReason"] ?: @"内存或加载门槛停止"]);
     }
     if (!gpuOK) return finish(false, @"Metal前向、数值或内存门槛未通过；详见本路线分项，无自动CPU替代");
+    if (splitReference) {
+        NSData *data = [[NSData alloc] initWithBase64EncodedString:savedRow[@"melF32Base64"] options:0];
+        if (data.length != 80 * targetFrames * sizeof(float)) return finish(false, @"独立CPU参考Mel长度无效，未放宽检查");
+        cpuMel.resize(80 * targetFrames); std::memcpy(cpuMel.data(), data.bytes, data.length);
+        const auto compared = CosyVoiceProbe::compare(cpuMel, gpuMel);
+        const bool strict = compared.valid && compared.relativeL2 <= 1e-3;
+        NSDictionary *gpuRow = rows.firstObject;
+        [rows addObject:@{@"status": strict ? @"strict-numeric-pass" : @"needs-quality-review", @"comparison": @"independent-cold-start CPU High vs Metal hybrid, target Mel",
+            @"inputSHA256": digest, @"referenceRoute": referenceRoute, @"melRelativeL2": compared.valid ? @(compared.relativeL2) : NSNull.null,
+            @"melCorrelation": compared.valid ? @(compared.correlation) : NSNull.null, @"melGainDB": compared.valid ? @(compared.gainDB) : NSNull.null,
+            @"cpuWarmTwoStepsSeconds": savedRow[@"warmTwoStepsMeanSeconds"], @"gpuWarmTwoStepsSeconds": gpuRow[@"warmTwoStepsMeanSeconds"],
+            @"strictRelativeL2Limit": @0.001, @"listeningValidated": @NO}];
+        trace.record([NSString stringWithFormat:@"独立CPU对照L2 %.8g；GPU预热%.3f秒，CPU预热%.3f秒；无需在释放Metal后加载第二套模型；非整链RTF", compared.relativeL2,[gpuRow[@"warmTwoStepsMeanSeconds"] doubleValue],[savedRow[@"warmTwoStepsMeanSeconds"] doubleValue]]);
+        return finish(strict, strict ? @"GPU有限值/重复/独立CPU数值对照通过；模块首次/预热分列，未接入正式生成或验收音质" : @"GPU输出有限，但相对独立CPU参考偏差未过1e-3；需复核音质，未切正式生成");
+    }
     // Never overlap CPU and GPU model lifetimes. Residual Metal allocations may
     // take time to retire; preserve GPU data if the reference cannot start.
     if (!waitAvailable(2500000000ULL, trace, @"释放Metal后CPU参考前")) return finish(false, @"GPU有限前向已完成，CPU参考因回收余量不足未运行；尚未完成数值对照");

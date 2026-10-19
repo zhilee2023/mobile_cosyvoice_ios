@@ -31,6 +31,10 @@ final class SentenceStream: ObservableObject {
     private var stopping = false
     private var player: ChunkPlayer?
     private var reportID: String?
+    private var checkpoints: [[String: Any]] = []
+    private var preparationSeconds = 0.0
+    private var acousticCallSeconds = 0.0
+    private var cleanupSeconds = 0.0
     static var documents: URL { FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0] }
     static var logURL: URL { documents.appendingPathComponent("last-sentence-stream.log") }
     static var audioURL: URL { documents.appendingPathComponent("last-sentence-stream.wav") }
@@ -47,8 +51,9 @@ final class SentenceStream: ObservableObject {
         isRunning = true; stopping = false; hasCompletedAudio = false
         audioSeconds = 0; computeSeconds = 0; startupSeconds = 0; generatedCount = 0; plannedCount = plan.count
         firstQueuedSeconds = nil; peakMB = 0; minAvailableMB = .greatestFiniteMagnitude
+        checkpoints = []; preparationSeconds = 0; acousticCallSeconds = 0; cleanupSeconds = 0
         started = ProcessInfo.processInfo.systemUptime
-        let routeLabel = experimentMode == "llm-chain-reuse" ? "整链LLM复用/按需释放" : (experimentMode == "two-sentence-staged" ? "两句分阶段/唯一Flow复用" : (experimentMode == "three-sentence-staged" ? "三句分阶段/唯一Flow复用" : (resident ? "自适应常驻/串行回退" : "串行基线")))
+        let routeLabel = experimentMode == "six-sentence-staged" ? "六句分阶段/唯一Flow复用" : (experimentMode == "llm-chain-reuse" ? "整链LLM复用/按需释放" : (experimentMode == "two-sentence-staged" ? "两句分阶段/唯一Flow复用" : (experimentMode == "three-sentence-staged" ? "三句分阶段/唯一Flow复用" : (resident ? "自适应常驻/串行回退" : "串行基线"))))
         reportID = DiagnosticReport.begin(kind: "sentence-generation", label: routeLabel,
             parameters: ["text": text, "optimized": optimized, "threads": threads, "hiFTLow": lowHiFT,
                          "adaptive": resident, "pipelineMode": experimentMode ?? "serial", "initialSegments": plan.count], sources: DiagnosticReport.sentenceSources)
@@ -57,8 +62,8 @@ final class SentenceStream: ObservableObject {
         record("开始句级流水：\(plan.count) 段；\(optimized ? "32 帧对齐/DSP 优化" : "v0.4.1 基线")；CPU \(threads) 线程；播放队列目标≤2秒、硬上限4秒；至多1句待播文件；不是 token 级流式")
         if experimentMode == "llm-chain-reuse" {
             record("LLM复用候选：每句清KV；尝试保留LLM穿过声学阶段，按规划释放；Flow逐句创建/销毁，最多160 speech token")
-        } else if experimentMode == "two-sentence-staged" || experimentMode == "three-sentence-staged" {
-            let batchLimit = experimentMode == "three-sentence-staged" ? 3 : 2
+        } else if LongTextBenchmarks.batchLimit(experimentMode) > 0 {
+            let batchLimit = LongTextBenchmarks.batchLimit(experimentMode)
             record("\(batchLimit)句分阶段候选：最多\(batchLimit)句完整token；释放LLM后复用唯一Flow384；每句最多105 speech token，无LLM/Flow共驻")
         } else {
             record(resident ? "自适应路线：尝试唯一Flow384；LLM前1800MB不足则释放Flow，本批改串行；每句重新prefill，无跨句KV；800MB底线不变" : "对照版：每句释放全部模型，每段最多160语音token/6.4秒")
@@ -133,7 +138,8 @@ final class SentenceStream: ObservableObject {
         let result: [String: Any] = await withCheckedContinuation { continuation in
             worker.async { continuation.resume(returning: session.close()) }
         }
-        computeSeconds += ProcessInfo.processInfo.systemUptime - begin
+        let elapsed = ProcessInfo.processInfo.systemUptime - begin
+        computeSeconds += elapsed; cleanupSeconds += elapsed
         peakMB = max(peakMB, result["peakFootprintMB"] as? Double ?? 0)
         minAvailableMB = min(minAvailableMB, result["minAvailableMB"] as? Double ?? .greatestFiniteMagnitude)
         record("完整链路候选已关闭；模型及token队列回收，见统一报告中的生命周期")
@@ -225,7 +231,7 @@ final class SentenceStream: ObservableObject {
         var attempts: [[String: Any]] = []
         var generationWallSeconds: Double?
         var batchRemaining = 0
-        let stagedBatchLimit = experimentMode == "three-sentence-staged" ? 3 : (experimentMode == "two-sentence-staged" ? 2 : 0)
+        let stagedBatchLimit = LongTextBenchmarks.batchLimit(experimentMode)
         let staged = stagedBatchLimit > 0
         var completedPlayback = false
         // Only these two app-owned scratch files can be replaced/removed here.
@@ -243,6 +249,10 @@ final class SentenceStream: ObservableObject {
                          "completedAudio": hasCompletedAudio, "completedPlayback": completedPlayback,
                          "pipelineMode": experimentMode ?? "serial", "lifecycle": lifecycleResult,
                          "attempts": attempts,
+                         "checkpoints": checkpoints, "batchLimit": stagedBatchLimit,
+                         "preparationSeconds": preparationSeconds, "acousticCallSeconds": acousticCallSeconds,
+                         "cleanupSeconds": cleanupSeconds,
+                         "timingScope": "compute includes setup, LLM preparation, acoustic calls, failures and cleanup; wall also includes queue/file/report waits",
                          "generationWallSeconds": generationWallSeconds.map { $0 as Any } ?? NSNull(),
                          "generationWallRTF": generationWallSeconds.map { audioSeconds > 0 ? $0/audioSeconds as Any : NSNull() } ?? NSNull(),
                          "queueGaps": player.gapCount, "queueGapSeconds": player.gapSeconds, "tokenStreaming": false])
@@ -293,6 +303,7 @@ final class SentenceStream: ObservableObject {
                     let prepared = await prepareBatch(batch, pipeline: pipelineSession)
                     let prepareElapsed = ProcessInfo.processInfo.systemUptime - prepareBegin
                     computeSeconds += prepareElapsed
+                    preparationSeconds += prepareElapsed
                     attempts.append(["phase": "prepare-batch", "firstSegment": at+1, "batchSize": batch.count, "seconds": prepareElapsed, "result": prepared])
                     peakMB = max(peakMB, prepared["peakFootprintMB"] as? Double ?? 0)
                     minAvailableMB = min(minAvailableMB, prepared["minAvailableMB"] as? Double ?? .greatestFiniteMagnitude)
@@ -323,6 +334,7 @@ final class SentenceStream: ObservableObject {
                 let output = await infer(pending[at].text, directory: directory, optimized: optimized, threads: threads, session: residentSession, lowHiFT: lowHiFT, pipeline: pipelineSession, staged: staged)
                 let elapsed = ProcessInfo.processInfo.systemUptime - begin
                 computeSeconds += elapsed
+                acousticCallSeconds += elapsed
                 attempts.append(["phase": "sentence", "segment": at+1, "seconds": elapsed, "result": output])
                 peakMB = max(peakMB, output["peakFootprintMB"] as? Double ?? 0)
                 minAvailableMB = min(minAvailableMB, output["minAvailableMB"] as? Double ?? .greatestFiniteMagnitude)
@@ -358,6 +370,15 @@ final class SentenceStream: ObservableObject {
                 let duration = try appendAudio(slot, writer: writer!)
                 audioSeconds += duration; generatedCount += 1
                 record(String(format: "句 %d 完成，音频 %.2f 秒，推理 %.3f 秒，单句 RTF %.3f；累计计算 RTF %.3f", at + 1, duration, elapsed, elapsed / duration, computeSeconds / audioSeconds))
+                if generatedCount % 3 == 0 || at + 1 == pending.count {
+                    checkpoints.append(["segments": generatedCount, "audioSeconds": audioSeconds,
+                        "computeSeconds": computeSeconds, "computeRTF": computeSeconds / audioSeconds,
+                        "preparationSeconds": preparationSeconds, "acousticCallSeconds": acousticCallSeconds,
+                        "queueGaps": player.gapCount, "thermalState": ProcessInfo.processInfo.thermalState.rawValue,
+                        "peakFootprintMB": peakMB, "minAvailableMB": minAvailableMB,
+                        "cleanupPending": true])
+                    record(String(format: "长文检查点：%d句/%.2f秒，累计计算RTF %.3f；每3句记录温度、内存与断供，最终RTF另含关闭成本", generatedCount, audioSeconds, computeSeconds/audioSeconds))
+                }
                 // Await only the previous sentence's file feeder, not speaker
                 // drain. This allows playback to overlap ONE native generation.
                 if let previous = playbackTask { try await previous.value }

@@ -22,7 +22,7 @@ struct PipelineLlmOwner : LlmOwner {
     @autoreleasepool {
         Trace trace(@"last-pipeline-lifecycle.log"); MemorySampler sampler; trace.sampler=&sampler;
         trace.record([NSString stringWithFormat:@"新整链对照 %@；4线程/Flow High两步/20ms采样；未获长文验收",mode],true);
-        if (![@[@"llm-chain-reuse",@"two-sentence-staged",@"three-sentence-staged"] containsObject:mode])
+        if (![@[@"llm-chain-reuse",@"two-sentence-staged",@"three-sentence-staged",@"six-sentence-staged"] containsObject:mode])
             return result(false,@"未知完整链路实验",trace);
         if (!waitAvailable(2900000000ULL,trace,@"对照启动前")) return result(false,@"初始余量不足；未加载候选模型",trace);
         CosyVoicePipeline *owner=[CosyVoicePipeline new];
@@ -56,11 +56,12 @@ struct PipelineLlmOwner : LlmOwner {
     @autoreleasepool {
         Trace trace(@"last-generation.log"); MemorySampler sampler; trace.sampler=&sampler;
         const BOOL three=[_mode isEqual:@"three-sentence-staged"];
-        const NSUInteger batchLimit=three?3:2;
+        const BOOL six=[_mode isEqual:@"six-sentence-staged"];
+        const NSUInteger batchLimit=six?6:(three?3:2);
         trace.record([NSString stringWithFormat:@"最多%lu句分阶段：同一LLM逐句reset KV生成完整EOS token，再释放LLM；此阶段不加载Flow/HiFT",(unsigned long)batchLimit],true);
         if(_at<_prepared.size())return result(false,@"小批仍有未消费句段，不能覆盖token队列",trace);
         _flow.reset(); _llm.reset(); _prepared.clear(); _texts=nil; _at=0;
-        if (_closed || (!three && ![_mode isEqual:@"two-sentence-staged"]) || texts.count<1 || texts.count>batchLimit)
+        if (_closed || (!six && !three && ![_mode isEqual:@"two-sentence-staged"]) || texts.count<1 || texts.count>batchLimit)
             return result(false,[NSString stringWithFormat:@"只允许本批1–%lu个完整句段",(unsigned long)batchLimit],trace);
         for(id text in texts) if(![text isKindOfClass:NSString.class] || [text length]<1 || [text length]>40)
             return result(false,@"句段长度或类型无效",trace);
@@ -68,17 +69,21 @@ struct PipelineLlmOwner : LlmOwner {
         NSString *csv=[NSString stringWithContentsOfFile:[_directory stringByAppendingPathComponent:@"prompt-speech-tokens.csv"] encoding:NSUTF8StringEncoding error:nil];
         for(NSString *item in [csv componentsSeparatedByCharactersInSet:[NSCharacterSet characterSetWithCharactersInString:@",\n\r "]]) if(item.length)prompt.push_back(item.intValue);
         if(prompt.size()!=87)return result(false,@"音色提示token无效",trace);
+        NSMutableArray *llmRows = [NSMutableArray array];
         for(NSUInteger index=0;index<texts.count;++index) {
             std::vector<int> speech; NSString *failure=nil; bool limit=false;
+            NSMutableDictionary *llmMetrics = [NSMutableDictionary dictionary];
             ++_requests; if(_llm)++_reusedRequests;
             trace.record([NSString stringWithFormat:@"本小批句%lu/%lu；至多105 speech token，必须正常EOS",(unsigned long)index+1,(unsigned long)texts.count]);
-            if(!generateSpeechTokens(_directory,texts[index],prompt,trace,speech,&failure,4,&limit,false,{},false,105,&_llm)) {
+            if(!generateSpeechTokens(_directory,texts[index],prompt,trace,speech,&failure,4,&limit,false,{},false,105,&_llm,llmMetrics)) {
                 // Strong out-parameter survives the helper's inner pool.
                 trace.record([@"停止：" stringByAppendingString:failure?:@"LLM失败"]);
                 _llm.reset(); _prepared.clear();
                 NSMutableDictionary *out=[result(false,failure?:@"LLM失败",trace) mutableCopy];
                 out[@"retrySplit"]=@(limit); out[@"failedTextIndex"]=@(index); return out;
             }
+            llmMetrics[@"speechTokens"] = @(speech.size());
+            [llmRows addObject:llmMetrics];
             _prepared.push_back(std::move(speech));
         }
         _texts=[texts copy]; _llm.reset();
@@ -86,6 +91,7 @@ struct PipelineLlmOwner : LlmOwner {
         if(!waitAvailable(2500000000ULL,trace,@"分阶段释放LLM后")) { _prepared.clear(); _texts=nil; return result(false,@"LLM释放后余量未恢复",trace); }
         NSMutableDictionary *out=[result(true,[NSString stringWithFormat:@"本批1–%lu句完整EOS token已就绪；无活跃LLM/KV",(unsigned long)batchLimit],trace) mutableCopy];
         out[@"preparedCount"]=@(_prepared.size()); out[@"executionMode"]=_mode;
+        out[@"llmRequests"] = llmRows;
         Trace life(@"last-pipeline-lifecycle.log");life.record([NSString stringWithFormat:@"已准备%zu句完整token；LLM已释放，Flow尚未加载；累计LLM请求%lu/复用%lu",_prepared.size(),(unsigned long)_requests,(unsigned long)_reusedRequests]);
         return out;
     }
@@ -95,8 +101,8 @@ struct PipelineLlmOwner : LlmOwner {
     std::lock_guard<std::mutex> guard(_lock);
     @autoreleasepool {
         Trace trace(@"last-generation.log");MemorySampler sampler;trace.sampler=&sampler;
-        trace.record(@"分阶段声学：LLM已释放；本小批唯一Flow384，HiFT逐句运行",true);
-        if(_closed || (![_mode isEqual:@"two-sentence-staged"] && ![_mode isEqual:@"three-sentence-staged"]) || _at>=_prepared.size() || _llm)
+        trace.record(@"分阶段声学：LLM已释放；本小批唯一Flow384，HiFT逐句运行；只预存有界token队列，不预存整批WAV",true);
+        if(_closed || (![_mode isEqual:@"two-sentence-staged"] && ![_mode isEqual:@"three-sentence-staged"] && ![_mode isEqual:@"six-sentence-staged"]) || _at>=_prepared.size() || _llm)
             return result(false,@"没有已准备的完整句段或错误的模型共驻状态",trace);
         bool reused=bool(_flow);
         if(!_flow) {
