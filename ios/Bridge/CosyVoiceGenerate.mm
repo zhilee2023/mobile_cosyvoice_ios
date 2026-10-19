@@ -394,7 +394,7 @@ struct Graph {
     Graph(const Graph &) = delete;
     Graph &operator=(const Graph &) = delete;
     explicit Graph(int threads = 4, bool fast = false) : cpuThreads(threads), performance(fast) {}
-    bool open(NSString *path, bool metal, Trace &trace, NSString *name, bool lowPrecision = false, bool bf16 = false) {
+    bool open(NSString *path, bool metal, Trace &trace, NSString *name, bool lowPrecision = false, bool bf16 = false, bool noTune = false) {
         traceLog = &trace;
         auto started = std::chrono::steady_clock::now();
         net.reset(MNN::Interpreter::createFromFile(path.fileSystemRepresentation));
@@ -409,6 +409,7 @@ struct Graph {
         config.type = metal ? MNN_FORWARD_METAL : MNN_FORWARD_CPU;
         config.backupType = MNN_FORWARD_CPU;
         config.numThread = metal ? 1 : cpuThreads;
+        if (metal && noTune) config.mode = MNN_GPU_TUNING_NONE;
         config.backendConfig = &backend;
         started = std::chrono::steady_clock::now();
         session = net->createSession(config);

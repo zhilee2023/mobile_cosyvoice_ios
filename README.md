@@ -6,6 +6,7 @@
 
 ## 当前状态
 
+- v0.7.6（build20）根据v0.7.5两次Metal Low/NoTune 256帧内存探针（最低余量1129/1159MB）接入真实两步Flow测试；256/384分别冷启动，记录首次/预热与input/run/read-sync，GPU释放后对照同输入CPU High目标Mel。保留800MB采样底线，前向前要求1100MB规划余量；已有会话内存探针从UI归档。尚未取得GPU前向/整链RTF结果，见 [GPU测试说明](docs/metal-forward-v076.md)。
 - v0.7.4（build18）根据v0.7.3真机报告新增“三句分阶段／唯一Flow”整链对照：默认三句先获取完整EOS并释放LLM，再共用一套Flow384逐句解码；两条已测路线从实验按钮归档。保留800MB采样底线、有限拆句、播放队列与统一报告。旧两句路线计算RTF为1.744/1.668、峰值约1.61GB；三句新路线的首句延迟、RTF和内存必须真机实测。见 [三句对照说明](docs/three-sentence-staged-v074.md)。
 - v0.7.5（build19）新增独立的 Flow Metal Low/NoTune 256帧安全探针：20ms采样峰值与最低可用内存，800MB底线不过即停止；只测会话与resize，不做GPU前向，不将结果冒充整链RTF。保持现有CPU生成路线不变，结果进入统一报告。
 - v0.7.3（build17）修复token超限动态错误信息跨autoreleasepool返回的生命周期隐患，短句WAV限制为单句；新增两个真实整链候选：LLM逐句清KV复用、两句token预生成后释放LLM并复用唯一Flow384。默认High两步/HiFT Low/4线程，800MB采样底线不变；计入准备/等待/失败/关闭耗时、记录实际复用及规划释放，仍只分享一个报告。新RTF、共驻和长文稳定性待真机验收。见 [接线、预算与验收](docs/pipeline-reuse-v073.md)。

@@ -36,7 +36,13 @@ enum ExperimentCatalog {
         .init(id: "two-sentence-staged", title: "两句分阶段／唯一 Flow", state: .archived,
               conclusion: "v0.7.3真机两次完成，计算RTF 1.744/1.668，峰值约1.61 GB；每三句仍创建两次Flow，首块约6.5秒。", execution: .sentence),
         .init(id: "three-sentence-staged", title: "三句分阶段／唯一 Flow（新对照）", state: .available,
-              conclusion: "最多三句完整EOS token后释放LLM；共用一次Flow384逐句生成。重点测总耗时、首块等待和最低内存。", execution: .sentence)
+              conclusion: "最新三句8.52秒音频，计算RTF1.518、首块7.95秒、最低余量1601MB，未观察到断供；更长文本仍待验收。", execution: .sentence),
+        .init(id: "flow-metal-low-memory-256", title: "Metal Low 256帧会话内存", state: .archived,
+              conclusion: "v0.7.5两次主后端Metal，峰值2062–2092MB、最低余量1129–1159MB；仅resize通过，尚无GPU前向结果。"),
+        .init(id: "flow-metal-low-256", title: "① GPU 256帧：两步Flow＋CPU数值对照", state: .available,
+              conclusion: "25个固定speech token；Metal Low/NoTune三轮，GPU释放后同输入CPU High参考；分别冷启动测。"),
+        .init(id: "flow-metal-low-384", title: "② GPU 384帧：两步Flow＋CPU数值对照", state: .available,
+              conclusion: "70个固定speech token；先完成256帧，再冷启动测384；800MB底线与前向前1100MB规划均保留。")
     ]
     static var available: [Route] { routes.filter { $0.state == .available } }
     static var archived: [Route] { routes.filter { $0.state == .archived } }

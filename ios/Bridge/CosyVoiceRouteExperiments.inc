@@ -2,7 +2,7 @@
 // every acoustic variant has a fresh session, never a hidden session pool.
 + (NSDictionary<NSString *, id> *)runExperiment:(NSString *)route atDirectory:(NSString *)directory {
     @autoreleasepool {
-        NSSet *allowed = [NSSet setWithArray:@[@"flow-buckets",@"flow-threads",@"flow-thread-4",@"flow-thread-2",@"flow-thread-3",@"flow-bf16",@"llm-reuse",@"llm-threads",@"hift-threads"]];
+        NSSet *allowed = [NSSet setWithArray:@[@"flow-buckets",@"flow-threads",@"flow-thread-4",@"flow-thread-2",@"flow-thread-3",@"flow-bf16",@"llm-reuse",@"llm-threads",@"hift-threads",@"flow-metal-low-256",@"flow-metal-low-384"]];
         if (![allowed containsObject:route]) return @{@"success":@NO,@"message":@"未知试验路线"};
         Trace trace([NSString stringWithFormat:@"last-experiment-%@.log",route]);
         MemorySampler allMemory; trace.sampler=&allMemory;
@@ -31,6 +31,8 @@
         NSString *csv=[NSString stringWithContentsOfFile:[directory stringByAppendingPathComponent:@"prompt-speech-tokens.csv"] encoding:NSUTF8StringEncoding error:nil];
         for(NSString *item in [csv componentsSeparatedByCharactersInSet:[NSCharacterSet characterSetWithCharactersInString:@",\n\r "]])if(item.length)prompt.push_back(item.intValue);
         if(prompt.size()!=87)return finish(false,@"提示token必须为87个");
+
+#include "CosyVoiceMetalExperiment.inc"
 
         if([route hasPrefix:@"llm-"]) {
             // Controlled penalty + greedy benchmark, NOT production sampling.

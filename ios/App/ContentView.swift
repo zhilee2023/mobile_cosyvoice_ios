@@ -10,13 +10,11 @@ struct ContentView: View {
     private let threads = ExperimentCatalog.defaultThreads
     @State private var lowHiFT = true
     @State private var singleRunning = false
-    @State private var gpuProbeRunning = false
-    @State private var gpuProbeStatus = "尚未测试；只检查 Metal 256 帧建会话与内存，不生成语音。"
     @State private var generationResult = "尚未生成"
     @State private var wavPlayer: AVAudioPlayer?
     @State private var errorMessage: String?
     @State private var reportStatus = ""
-    private var busy: Bool { singleRunning || gpuProbeRunning || sentences.isRunning || experiments.isRunning }
+    private var busy: Bool { singleRunning || sentences.isRunning || experiments.isRunning }
     private var isSingleSentence: Bool {
         guard !text.isEmpty, text.utf16.count <= 40 else { return false }
         return (try? SentencePlanner.plan(text, limit: 40).count) == 1
@@ -72,14 +70,11 @@ struct ContentView: View {
                     Button("当前路线返回后停止") { experiments.stop() }
                         .disabled(!experiments.isRunning)
                     Text(experiments.status).font(.caption).textSelection(.enabled)
-                  }
-                }
-                Section("GPU 可行性 · 安全内存探针") {
-                    Button("测 Metal Low/NoTune · 256 帧") { probeGPU() }
-                        .disabled(!models.ready || busy)
-                    Text(gpuProbeStatus).font(.caption).textSelection(.enabled)
-                    Text("冷启动后单独运行。20ms采样；最低可用内存必须≥800 MB。只测加载与 resize，不做前向或整链；失败不会自动改动现有 CPU 生成路线。结果汇入统一报告。")
+                    Text("GPU测试分别冷启动，先256帧、再384帧。各测三轮两步Flow并对照CPU High；输入/执行/同步分项写入统一报告。GPU独立运行，无LLM或HiFT共驻。")
                         .font(.caption).foregroundStyle(.secondary)
+                    Text("前向前规划余量1100 MB，20ms采样底线800 MB；本项不生成声音，模块耗时不能当整链RTF。")
+                        .font(.caption).foregroundStyle(.secondary)
+                  }
                 }
                 Section("新整链对照 · 待真机验收") {
                     ForEach(ExperimentCatalog.available.filter { $0.execution == .sentence }, id: \.id) { route in
@@ -152,25 +147,6 @@ struct ContentView: View {
     private func startExperiments(_ routes: [String]) {
         wavPlayer?.stop(); player.stop()
         experiments.start(routes: routes, directory: models.directory.path)
-    }
-    private func probeGPU() {
-        let directory = models.directory.path
-        gpuProbeRunning = true
-        gpuProbeStatus = "正在检查 Metal 会话与内存；请保持 App 在前台。"
-        let runID = DiagnosticReport.begin(kind: "gpu-feasibility", label: "Flow Metal Low/NoTune 256帧内存探针",
-            parameters: ["frames": 256, "precision": "low", "tuning": "none", "minimumAvailableMB": 800,
-                         "forwardRun": false, "wholeChainRTFMeasured": false], sources: ["last-memory-probe.log"])
-        DispatchQueue.global(qos: .userInitiated).async {
-            let result = MNNProbe.probeFlowMetalLowNoTuneMemory(atDirectory: directory)
-            DispatchQueue.main.async {
-                let passed = result["success"] as? Bool == true
-                DiagnosticReport.finish(runID, state: passed ? "memory-resize-passed" : "not-passed", result: result)
-                gpuProbeStatus = String(format: "%@；采样峰值 %.0f MB，最低可用 %.0f MB。尚未测 GPU 前向。",
-                    result["message"] as? String ?? "未返回结果", result["peakFootprintMB"] as? Double ?? 0,
-                    result["minAvailableMB"] as? Double ?? 0)
-                gpuProbeRunning = false
-            }
-        }
     }
     private func generateSingle() {
         let directory = models.directory.path, input = text, threadCount = threads, low = lowHiFT
