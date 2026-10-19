@@ -21,6 +21,12 @@ Finite values alone do not pass the numerical gate. Candidates with divergence
 remain reported; no automatic production promotion. Flow W8 is BLOCKED on a valid
 original student checkpoint/export chain, not substituted by renaming FP16.
 
+Flow/HiFT rows also record the session-reported thread count and start/end thermal
+state. Thread count is not the measured number of CPU cores used. iOS's pinned
+build disables MNN's own thread pool but MNN's Apple concurrency path uses GCD;
+this is not evidence that it is single-threaded. Do not transplant the Android
+thread-pool settings or an unverified private patch into this baseline.
+
 Every route writes `last-experiment-<route>.log` and `.json`. The runner writes
 `last-experiment-summary.log`. Routes may be run singly (prefer cold start), or
 queued. Failure/insufficient recovery is recorded, not silently skipped as passed.

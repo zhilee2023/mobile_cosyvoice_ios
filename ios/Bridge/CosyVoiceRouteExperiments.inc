@@ -91,11 +91,14 @@
                 MemorySampler memory;
                 std::vector<float> spectrum;
                 double first=0,warm=0,setup=0;
+                int actualThreads=-1;
+                long thermalStart=NSProcessInfo.processInfo.thermalState;
                 {
                     auto started=std::chrono::steady_clock::now();Graph core(threads,true);
                     if(!core.open([directory stringByAppendingPathComponent:@"hift-core.fp32.mnn"],false,trace,@"HiFT core Low",true)||
                        !core.shape("mel",{1,80,frames})||!core.shape("source_stft",{1,18,stftFrames}))return finish(false,@"HiFT线程会话失败");
                     core.net->resizeSession(core.session);core.releaseModel();setup=secondsSince(started);
+                    core.net->getSessionInfo(core.session,MNN::Interpreter::THREAD_NUMBER,&actualThreads);
                     for(int run=0;run<3;++run) {
                         if(!sampledBudgetOK(trace))return finish(false,@"HiFT前向前内存保护");
                         started=std::chrono::steady_clock::now();
@@ -107,7 +110,7 @@
                 if(reference.empty())reference=spectrum;
                 auto compared=CosyVoiceProbe::compare(reference,spectrum);
                 bool equivalent=compared.valid&&compared.relativeL2<=1e-3;
-                [rows addObject:@{@"threads":@(threads),@"setupSeconds":@(setup),@"firstSeconds":@(first),@"warmMeanSeconds":@(warm),
+                [rows addObject:@{@"threads":@(threads),@"actualThreads":@(actualThreads),@"thermalStart":@(thermalStart),@"thermalEnd":@(NSProcessInfo.processInfo.thermalState),@"setupSeconds":@(setup),@"firstSeconds":@(first),@"warmMeanSeconds":@(warm),
                     @"relativeL2":@(compared.relativeL2),@"status":equivalent?@"pass":@"numerical-divergence",
                     @"peakFootprintMB":@(memory.peak.load()/1e6),@"minAvailableMB":@(memory.available.load()/1e6)}];
                 trace.record([NSString stringWithFormat:@"HiFT Low %d线程：setup %.3f 首次%.3f 预热%.3f秒；频谱L2 %.8g（仅core，不含F0/DSP/LLM/Flow）",threads,setup,first,warm,compared.relativeL2]);
@@ -138,7 +141,8 @@
         for(auto variant:variants) {
             if(!waitAvailable(2800000000ULL,trace,@"独立Flow组前"))return finish(false,@"Flow组间内存未恢复；已完成结果保留，未运行后续组");
             MemorySampler memory;
-            int n=variant.frames,backend=-1;
+            int n=variant.frames,backend=-1,actualThreads=-1;
+            long thermalStart=NSProcessInfo.processInfo.thermalState;
             std::vector<float> initial(80*n,0),paddedMu(80*n,0),cond(80*n,0),mask(n,0),mel,firstMel;
             for(int c=0;c<80;++c){
                 for(int f=0;f<effective;++f){initial[c*n+f]=noise[c*15000+f];paddedMu[c*n+f]=mu[c*effective+f];}
@@ -154,6 +158,7 @@
                     !(flow.shape("x",{1,80,n})&&flow.shape("mu",{1,80,n})&&flow.shape("cond",{1,80,n})&&flow.shape("mask",{1,1,n})&&flow.shape("spks",{1,80})&&flow.shape("t",{1})))return finish(false,@"Flow输入会话失败");
                 flow.net->resizeSession(flow.session);flow.releaseModel();setup=secondsSince(started);
                 flow.net->getSessionInfo(flow.session,MNN::Interpreter::BACKENDS,&backend);
+                flow.net->getSessionInfo(flow.session,MNN::Interpreter::THREAD_NUMBER,&actualThreads);
                 trace.record([NSString stringWithFormat:@"Flow %d帧 %d线程 %@；setup %.3f秒；主backend=%d；BF16编译启用，但逐算子可回退，不能声称全图BF16",n,variant.threads,variant.bf16?@"BF16请求":@"High",setup,backend]);
                 if(variant.bf16&&backend!=13)allSupported=false;
                 for(int run=0;run<3&&valid;++run) {
@@ -184,7 +189,7 @@
             bool equivalent=valid&&compared.valid&&compared.relativeL2<=1e-3&&replayL2<=1e-3;
             allEquivalent=allEquivalent&&equivalent;
             NSString *status=!valid?@"nonfinite-or-run-failure":(variant.bf16&&backend!=13?@"unsupported-or-fallback":(equivalent?@"pass":@"needs-quality-review"));
-            [rows addObject:@{@"frames":@(n),@"threads":@(variant.threads),@"requestedPrecision":variant.bf16?@"BF16":@"High",
+            [rows addObject:@{@"frames":@(n),@"threads":@(variant.threads),@"actualThreads":@(actualThreads),@"thermalStart":@(thermalStart),@"thermalEnd":@(NSProcessInfo.processInfo.thermalState),@"requestedPrecision":variant.bf16?@"BF16":@"High",
                 @"backend":@(backend),@"setupSeconds":@(setup),@"firstTwoStepsSeconds":@(first),@"warmTwoStepsMeanSeconds":@(warm),
                 @"finite":@(valid),@"melRelativeL2":compared.valid?@(compared.relativeL2):NSNull.null,@"repeatRelativeL2":@(replayL2),@"status":status,
                 @"peakFootprintMB":@(memory.peak.load()/1e6),@"minAvailableMB":@(memory.available.load()/1e6),@"audioSeconds":@2.8}];
