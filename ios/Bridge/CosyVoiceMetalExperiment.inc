@@ -1,7 +1,8 @@
 // Included in runExperiment after its report, sampler and prompt are ready.
 // Each button owns one Metal session, then destroys it before CPU reference.
-if ([route hasPrefix:@"flow-metal-low-"] || [route isEqual:@"flow-metal-nan"]) {
+if ([route hasPrefix:@"flow-metal-low-"] || [route hasPrefix:@"flow-metal-hybrid-"] || [route isEqual:@"flow-metal-nan"]) {
     const bool diagnose = [route isEqual:@"flow-metal-nan"];
+    const bool hybrid = [route hasPrefix:@"flow-metal-hybrid-"];
     const int frames = diagnose || [route hasSuffix:@"256"] ? 256 : 384;
     const int speechCount = frames == 256 ? 25 : 70;
     const int targetFrames = 2 * speechCount;
@@ -38,12 +39,15 @@ if ([route hasPrefix:@"flow-metal-low-"] || [route isEqual:@"flow-metal-nan"]) {
     std::fill(mask.begin(), mask.begin() + effective, 1.0f);
     noise.clear(); noise.shrink_to_fit(); mu.clear(); mu.shrink_to_fit();
     trace.record([NSString stringWithFormat:@"固定%d个speech token；有效%d帧→%d帧；Metal Low NoTune先测3轮两步，再释放GPU测同输入CPU High；不运行LLM或HiFT", speechCount, effective, frames]);
+    if (hybrid) trace.record(@"混合候选：Metal Low主干；每层QK+mask+Softmax由CPU FP32重算后回传概率；复制/同步/BLAS均计入两步wall");
 
     std::vector<float> gpuMel, cpuMel;
     auto runBackend = [&](bool metal, std::vector<float> &mel) -> bool {
         NSMutableDictionary *row = [@{@"backendRequested": metal ? @"Metal" : @"CPU", @"requestedPrecision": metal ? @"Low" : @"High",
             @"frames": @(frames), @"speechTokens": @(speechCount), @"audioSeconds": @(speechCount / 25.0),
             @"wholeChainRTFMeasured": @NO, @"status": @"started", @"completedRuns": @0,
+            @"attentionMode": metal && hybrid ? @"CPU FP32 QK-mask-softmax" : @"original graph",
+            @"runIncludesAttentionCallbacks": @(metal && hybrid),
             @"thermalStart": @(NSProcessInfo.processInfo.thermalState)} mutableCopy];
         NSMutableArray *runs = [NSMutableArray array]; row[@"runs"] = runs; [rows addObject:row];
         MemorySampler memory;
@@ -107,7 +111,13 @@ if ([route hasPrefix:@"flow-metal-low-"] || [route isEqual:@"flow-metal-nan"]) {
                         runRow[@"status"] = diagnostic[@"stopReason"];
                         return false;
                     }
-                    if (!flow.run()) { row[@"status"] = @"run-failed"; return false; }
+                    NSMutableDictionary *attentionMetrics = [NSMutableDictionary dictionary];
+                    bool ran;
+                    if (metal && hybrid) {
+                        ran = runMetalWithFP32Attention(flow, trace, attentionMetrics);
+                        row[@"lastAttentionAttempt"] = attentionMetrics;
+                    } else ran = flow.run();
+                    if (!ran) { row[@"status"] = metal && hybrid ? @"hybrid-attention-run-failed" : @"run-failed"; return false; }
                     const double runSeconds = secondsSince(phaseStart);
                     phaseStart = std::chrono::steady_clock::now();
                     const bool valid = flow.output("estimator_out", x.size(), velocity);
@@ -115,6 +125,7 @@ if ([route hasPrefix:@"flow-metal-low-"] || [route isEqual:@"flow-metal-nan"]) {
                     NSMutableDictionary *stepRow = [@{@"step": @(step + 1), @"inputSeconds": @(inputSeconds),
                         @"runSeconds": @(runSeconds), @"readSyncSeconds": @(readSeconds), @"finite": @(valid),
                         @"wallSeconds": @(secondsSince(stepStart))} mutableCopy];
+                    if (metal && hybrid) stepRow[@"fp32Attention"] = attentionMetrics;
                     [steps addObject:stepRow];
                     trace.record([NSString stringWithFormat:@"%@ 第%d轮 %d/2：input %.4f run %.4f read/sync %.4f秒；有效=%@", label, run + 1, step + 1, inputSeconds, runSeconds, readSeconds, valid ? @"是" : @"否"]);
                     if (!valid) { row[@"status"] = @"nonfinite-or-output-failed"; return false; }
@@ -169,5 +180,5 @@ if ([route hasPrefix:@"flow-metal-low-"] || [route isEqual:@"flow-metal-nan"]) {
         @"melGainDB": compared.valid ? @(compared.gainDB) : NSNull.null,
         @"strictRelativeL2Limit": @0.001, @"listeningValidated": @NO}];
     trace.record([NSString stringWithFormat:@"Metal Low相对CPU High目标Mel：L2 %.8g correlation %.8g gain %.5f dB；未运行HiFT、未试听、非整链RTF", compared.relativeL2, compared.correlation, compared.gainDB]);
-    return finish(strict, strict ? @"GPU两步、重复一致性、CPU数值对照与800 MB内存门槛通过；整链速度和音质仍待验证" : @"GPU有限前向完成，但与CPU的Mel差异需复核；未切换正式生成路线");
+    return finish(strict, strict ? (hybrid ? @"Metal Low主干+CPU FP32注意力：两步/重复/CPU数值对照/800MB门槛通过；尚未测整链RTF和试听" : @"GPU两步、重复一致性、CPU数值对照与800 MB内存门槛通过；整链速度和音质仍待验证") : @"有限前向完成，但与CPU的Mel差异需复核；未切换正式生成路线");
 }

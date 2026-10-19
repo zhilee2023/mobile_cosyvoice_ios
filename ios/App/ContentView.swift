@@ -70,9 +70,9 @@ struct ContentView: View {
                     Button("当前路线返回后停止") { experiments.stop() }
                         .disabled(!experiments.isRunning)
                     Text(experiments.status).font(.caption).textSelection(.enabled)
-                    Text("冷启动后单独测首个NaN算子。同步检查每步输入和输出，出现异常后返回算子名、类型、形状及最近8个算子；结果进入同一个统一报告。")
+                    Text("分别冷启动，先256帧再384帧。Metal Low主干＋CPU FP32注意力，局部重算QK/掩码/Softmax；两步耗时包含复制、同步与CPU计算。结果汇入同一个报告。")
                         .font(.caption).foregroundStyle(.secondary)
-                    Text("最多60秒，每个浮点tensor最多读取8MB；前向前余量1100 MB，20ms采样底线800 MB。逐算子同步会改变耗时，这项只定位数值问题。")
+                    Text("每步必须完成22层注意力回传；前向前余量1100 MB，20ms采样底线800 MB。先验证有限值、CPU偏差和模块速度；整链RTF与试听尚待验证。")
                         .font(.caption).foregroundStyle(.secondary)
                   }
                 }

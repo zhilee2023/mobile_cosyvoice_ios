@@ -1,5 +1,6 @@
 #import "CosyVoiceGenerate.h"
 #include "CosyVoiceDSP.hpp"
+#include "CosyVoiceStableAttention.hpp"
 #include "CosyVoiceProbeMetrics.hpp"
 #include "CosyVoiceBudget.hpp"
 #include "CosyVoiceFailure.hpp"
@@ -22,6 +23,7 @@
 #include <memory>
 #include <mutex>
 #include <numeric>
+#include <string>
 #include <thread>
 #include <vector>
 #include <unistd.h>
@@ -491,6 +493,7 @@ struct Graph {
     void releaseModel() { net->releaseModel(); }
 };
 #include "CosyVoiceMetalDiagnostics.inc"
+#include "CosyVoiceMixedAttention.inc"
 int reflected(int index, int length) {
     while (index < 0 || index >= length) index = index < 0 ? -index : 2 * length - 2 - index;
     return index;

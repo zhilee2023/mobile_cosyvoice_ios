@@ -34,6 +34,8 @@ jobs:
           build-tests/probe-metrics-check
           clang++ -O2 -std=c++17 -Iios/Bridge tests/budget_check.cpp -o build-tests/budget-check
           build-tests/budget-check
+          clang++ -O2 -std=c++17 -Iios/Bridge -framework Accelerate tests/attention_check.cpp -o build-tests/attention-check
+          build-tests/attention-check
       - name: Build pinned MNN 3.6.1 for iOS
         run: |
           git clone --depth 1 --branch 3.6.1 https://github.com/alibaba/MNN.git MNN

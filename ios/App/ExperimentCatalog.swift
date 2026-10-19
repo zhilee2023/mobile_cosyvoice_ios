@@ -43,8 +43,12 @@ enum ExperimentCatalog {
               conclusion: "v0.7.6第一步17920/20480个值NaN，有效224帧均受影响；最低余量1115MB，属于数值失败。"),
         .init(id: "flow-metal-low-384", title: "GPU 384帧两步Flow", state: .archived,
               conclusion: "v0.7.6第一步25120/30720个值NaN，有效314帧均受影响；最低余量1106MB，未形成有效GPU测速。"),
-        .init(id: "flow-metal-nan", title: "定位 GPU 首个 NaN 算子（256帧）", state: .available,
-              conclusion: "逐算子同步检查输入/输出，遇到首个异常即返回；最多60秒，800MB底线；诊断耗时不作测速。")
+        .init(id: "flow-metal-nan", title: "GPU 首个 NaN 算子定位", state: .archived,
+              conclusion: "v0.7.7第三个Transformer块QK乘法有限输入→大量Inf，随后Softmax首次NaN；定位完成，最低余量1108MB。"),
+        .init(id: "flow-metal-hybrid-256", title: "① GPU主干＋FP32注意力 · 256帧", state: .available,
+              conclusion: "Metal Low主干，CPU FP32重算QK+mask+Softmax；两步与CPU High数值对照；先冷启动测本项。"),
+        .init(id: "flow-metal-hybrid-384", title: "② GPU主干＋FP32注意力 · 384帧", state: .available,
+              conclusion: "同一混合实现，固定70个token；256帧有限且内存通过后冷启动测；不是纯GPU或整链RTF。")
     ]
     static var available: [Route] { routes.filter { $0.state == .available } }
     static var archived: [Route] { routes.filter { $0.state == .archived } }

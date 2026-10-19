@@ -31,6 +31,7 @@ targets:
           - "$(inherited)"
           - "-ObjC"
     dependencies:
+      - sdk: Accelerate.framework
       - framework: Vendor/MNN.framework
         embed: false
     scheme:
