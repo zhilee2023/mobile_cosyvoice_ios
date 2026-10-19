@@ -13,6 +13,7 @@ struct ContentView: View {
     @State private var generationResult = "尚未生成"
     @State private var wavPlayer: AVAudioPlayer?
     @State private var errorMessage: String?
+    @State private var reportStatus = ""
     private var busy: Bool { singleRunning || sentences.isRunning || experiments.isRunning }
 
     var body: some View {
@@ -59,14 +60,18 @@ struct ContentView: View {
                         .font(.caption).foregroundStyle(.secondary)
                     Text(generationResult).font(.caption).textSelection(.enabled)
                 }
-                Section("加速实验室 · 六条独立路线") {
+                Section("加速实验室 · 分模块测试") {
                     Text("固定同输入对照；每组只保留一个声学会话，记录首次 / 预热、偏差、20ms内存采样。结果不自动替换默认配置，也不是整链RTF。建议分别冷启动测试；连续运行若内存未恢复会记录未运行。")
                         .font(.caption).foregroundStyle(.secondary)
                     ForEach(ExperimentRunner.routes, id: \.id) { route in
                         Button(route.title) { startExperiments([route.id]) }
                             .disabled(!models.ready || busy)
                     }
-                    Button("依次运行六条路线") { startExperiments(ExperimentRunner.routes.map(\.id)) }
+                    Text("Flow线程请先单独测②a，再分别冷启动测②b／②c，避免上一组残留拦住下一组。统一报告会保留三组实际Mel供跨组核对；单组通过不等于线程间已一致。")
+                        .font(.caption).foregroundStyle(.secondary)
+                    Button("依次运行其他路线（不含Flow独立线程）") {
+                        startExperiments(ExperimentRunner.routes.filter { !$0.id.hasPrefix("flow-thread-") }.map(\.id))
+                    }
                         .disabled(!models.ready || busy)
                     Button("当前路线返回后停止") { experiments.stop() }
                         .disabled(!experiments.isRunning)
@@ -75,15 +80,12 @@ struct ContentView: View {
                         .font(.caption).foregroundStyle(.secondary)
                     Text("W8：待补原始学生模型/导出链；当前没有可验收的Flow W8文件。不会把改文件名或FP16重新转换算成W8。")
                         .font(.caption).foregroundStyle(.secondary)
-                    if exists(ExperimentRunner.summaryURL) {
-                        ShareLink("分享实验总览", item: ExperimentRunner.summaryURL).disabled(busy)
-                    }
-                    ForEach(ExperimentRunner.routes, id: \.id) { route in
-                        let log = SentenceStream.documents.appendingPathComponent("last-experiment-\(route.id).log")
-                        let json = SentenceStream.documents.appendingPathComponent("last-experiment-\(route.id).json")
-                        if exists(log) { ShareLink("日志 · \(route.title)", item: log).disabled(busy) }
-                        if exists(json) { ShareLink("数据 · \(route.title)", item: json).disabled(busy) }
-                    }
+                }
+                Section("统一测试报告 · 只发这一个") {
+                    ShareLink("分享统一测试报告", item: DiagnosticReport.url).disabled(busy || !exists(DiagnosticReport.url))
+                    Text(reportStatus).font(.caption).textSelection(.enabled)
+                    Text("自动汇总模块数据、日志和完整生成记录，含版本/测试编号/状态；跨次测试保留最近20次、总计≤8 MB。旧文件明确标成历史，不冒充新测试；中断后重开可收集本轮已写日志。报告可能含输入文字，请注意隐私。不含模型或音频。")
+                        .font(.caption).foregroundStyle(.secondary)
                 }
                 Section("播放与日志") {
                     if exists(URL(fileURLWithPath: CosyVoiceGenerate.generatedWavPath())) {
@@ -95,10 +97,6 @@ struct ContentView: View {
                         ShareLink("分享最近完整长文", item: SentenceStream.audioURL).disabled(busy)
                     }
                     Button("停止试听") { wavPlayer?.stop(); if !busy { player.stop() } }
-                    ForEach(["last-sentence-stream.log", "last-sentence-diagnostics.log", "last-resident-lifecycle.log", "last-generation.log", "last-llm-runtime.log"], id: \.self) { name in
-                        let url = SentenceStream.documents.appendingPathComponent(name)
-                        if exists(url) { ShareLink(name, item: url).font(.caption).disabled(busy) }
-                    }
                     Text("旧WAV只代表最近成功记录。失败时partial保留，但不标成完整长文；分享汇总与各句诊断才能核对实际路线和RTF。")
                         .font(.caption).foregroundStyle(.secondary)
                 }
@@ -110,6 +108,13 @@ struct ContentView: View {
                 }
             }
             .navigationTitle("CosyVoice Mobile")
+            .onAppear {
+                DiagnosticReport.prepare()
+                reportStatus = DiagnosticReport.lastError ?? "报告已就绪；测完不同模块后，只需分享同一个JSON。"
+            }
+            .onChange(of: busy) { _, running in
+                if !running { reportStatus = DiagnosticReport.lastError ?? "结果已汇入统一报告，无需分别发日志和数据。" }
+            }
             .alert("提示", isPresented: Binding(get: { errorMessage != nil }, set: { if !$0 { errorMessage = nil } })) {
                 Button("确定", role: .cancel) { errorMessage = nil }
             } message: { Text(errorMessage ?? "未知错误") }
@@ -129,9 +134,12 @@ struct ContentView: View {
         let directory = models.directory.path, input = text, threadCount = threads, low = lowHiFT
         wavPlayer?.stop(); player.stop(); singleRunning = true
         generationResult = "正在生成；请保持前台，失败后分享日志。"
+        let runID = DiagnosticReport.begin(kind: "single-generation", label: "当前短句生成",
+            parameters: ["text": input, "threads": threadCount, "hiFTLow": low, "optimized": true], sources: DiagnosticReport.generationSources)
         DispatchQueue.global(qos: .userInitiated).async {
             let result = CosyVoiceGenerate.generateText(input, atDirectory: directory, optimized: true, cpuThreads: threadCount, lowPrecisionHiFT: low)
             DispatchQueue.main.async {
+                DiagnosticReport.finish(runID, state: result["success"] as? Bool == true ? "completed" : "not-completed", result: result)
                 singleRunning = false
                 generationResult = String(format: "%@；峰值 %.0f MB，最低可用 %.0f MB。", result["message"] as? String ?? "未返回结果", result["peakFootprintMB"] as? Double ?? 0, result["minAvailableMB"] as? Double ?? 0)
             }

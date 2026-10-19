@@ -6,6 +6,7 @@
 
 ## 当前状态
 
+- v0.7.1（build15）统一导出一个 `cosyvoice-test-report.json`，保存分次模块测试及生成记录，带版本/编号/状态和匹配日志；分模块按钮保留，Flow2/3/4改为独立入口。修正LLM累计计时、BF16未完成两步却显示两步耗时的问题。默认推理配置不变；近期RTF1.5–1.7只是按现有数据的条件估算，不是新实测。见 [报告、估算和后续实验方向](docs/next-experiments-v071.md)。
 - v0.7.0（build14）清理已有结论的探针UI，增加六条独立路线（Flow尺寸/线程/BF16、LLM复用/线程、HiFT线程），固定输入记录首次/预热、数值偏差和内存；不自动替换默认配置。常驻句级新增1800 MB加载规划与释放Flow转串行回退，800 MB底线不变。所有新配置的真机收益仍待测，W8缺原始导出链暂不可运行。见 [路线、验收与边界](docs/experiments-v070.md)。
 - v0.6.1（build13）按用户试听选择默认HiFT core Low，F0/Flow仍High，保留High开关；普通和唯一Flow常驻的句级流水均接通，所有生成增加20ms采样与HiFT resize后800 MB余量保护。PC Low三句回归通过。另完成EOS前出PCM的KV暂停/续推实验，但现有离线图的声学一致性门槛未通过，**不把句级版冒充正式token级流式**；手机内存/RTF仍待真机。见 [Low版、内存策略与token级阻碍](docs/low-stream-v061.md)。
 - v0.6.0 新增独立“按句生成 · 常驻Flow384”入口：整批唯一CPU High Flow，4线程、两步不变，每句重新prefill并销毁LLM后才运行HiFT High；超105 speech token（约4.2秒）拆句重做，结束/取消/失败后关闭Flow，保留原逐句释放基线。只有短KV共驻探针已由iPhone确认（峰值2308 MB、最低可用913 MB）；完整整句/HiFT/长文共驻与RTF尚待新包真机验收，不承诺更快或绝不OOM。17个模型不变。见 [常驻句级版与测试步骤](docs/resident-sentences-v060.md)。

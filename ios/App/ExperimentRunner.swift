@@ -5,7 +5,9 @@ import Combine
 final class ExperimentRunner: ObservableObject {
     static let routes: [(id: String, title: String)] = [
         ("flow-buckets", "① Flow：384 / 352 / 320帧"),
-        ("flow-threads", "② Flow High：4 / 2 / 3线程"),
+        ("flow-thread-4", "②a Flow High：仅4线程（冷启动测）"),
+        ("flow-thread-2", "②b Flow High：仅2线程（冷启动测）"),
+        ("flow-thread-3", "②c Flow High：仅3线程（冷启动测）"),
         ("llm-reuse", "③ LLM：独立 / 复用实例，逐句reset KV"),
         ("llm-threads", "④ LLM：4 / 2 / 3线程"),
         ("hift-threads", "⑤ HiFT Low：4 / 2 / 3线程"),
@@ -28,15 +30,19 @@ final class ExperimentRunner: ObservableObject {
                 let title = Self.routes.first { $0.id == route }!.title
                 status = "\(index + 1)/\(routes.count)：\(title)；请保持前台。当前路线返回后才可停止。"
                 record(status)
+                let runID = DiagnosticReport.begin(kind: "module-experiment", label: title,
+                    parameters: ["route": route, "wholeChainRTFMeasured": false],
+                    sources: ["last-experiment-\(route).json", "last-experiment-\(route).log"])
                 let result: [String: Any] = await withCheckedContinuation { continuation in
                     worker.async { continuation.resume(returning: CosyVoiceGenerate.runExperiment(route, atDirectory: directory)) }
                 }
                 let passed = result["success"] as? Bool == true
                 let message = result["message"] as? String ?? "无结果"
+                DiagnosticReport.finish(runID, state: passed ? "passed" : "not-passed", result: result)
                 record(String(format: "%@：%@；%@；采样峰值%.0f MB，最低可用%.0f MB；耗时%.3f秒。", title, passed ? "本路线门槛通过" : "未全部通过/未运行，请看分组数据", message, result["peakFootprintMB"] as? Double ?? 0, result["minAvailableMB"] as? Double ?? 0, result["wallSeconds"] as? Double ?? 0))
                 completed += 1
             }
-            status = "已返回 \(completed)/\(routes.count) 条路线\(stopRequested ? "，按要求停止" : "")；返回不等于通过。请分享总览及各路线JSON/日志；默认配置未自动更改。"
+            status = "已返回 \(completed)/\(routes.count) 条路线\(stopRequested ? "，按要求停止" : "")；返回不等于通过。只需分享统一测试报告；默认配置未自动更改。"
             record(status)
         }
     }

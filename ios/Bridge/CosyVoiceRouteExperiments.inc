@@ -2,18 +2,22 @@
 // every acoustic variant has a fresh session, never a hidden session pool.
 + (NSDictionary<NSString *, id> *)runExperiment:(NSString *)route atDirectory:(NSString *)directory {
     @autoreleasepool {
-        NSSet *allowed = [NSSet setWithArray:@[@"flow-buckets",@"flow-threads",@"flow-bf16",@"llm-reuse",@"llm-threads",@"hift-threads"]];
+        NSSet *allowed = [NSSet setWithArray:@[@"flow-buckets",@"flow-threads",@"flow-thread-4",@"flow-thread-2",@"flow-thread-3",@"flow-bf16",@"llm-reuse",@"llm-threads",@"hift-threads"]];
         if (![allowed containsObject:route]) return @{@"success":@NO,@"message":@"未知试验路线"};
         Trace trace([NSString stringWithFormat:@"last-experiment-%@.log",route]);
         MemorySampler allMemory; trace.sampler=&allMemory;
         NSMutableArray *rows=[NSMutableArray array];
-        trace.record([NSString stringWithFormat:@"路线 %@；v0.7.0；20ms采样；最低余量800 MB；相同输入，首次/预热分开；不等于整链RTF",route],true);
+        trace.record([NSString stringWithFormat:@"路线 %@；v%@；20ms采样；最低余量800 MB；相同输入，首次/预热分开；不等于整链RTF",route,[NSBundle.mainBundle objectForInfoDictionaryKey:@"CFBundleShortVersionString"]],true);
+        bool singleThread = [route hasPrefix:@"flow-thread-"];
         auto finish = [&](bool ok, NSString *message) -> NSDictionary * {
             trace.record(message);
             NSMutableDictionary *summary=[result(ok,message,trace) mutableCopy];
             summary[@"route"]=route; summary[@"rows"]=rows;
             summary[@"wholeChainRTFMeasured"]=@NO;
             summary[@"automaticPromotion"]=@NO;
+            summary[@"version"]=[NSBundle.mainBundle objectForInfoDictionaryKey:@"CFBundleShortVersionString"]?:@"unknown";
+            summary[@"build"]=[NSBundle.mainBundle objectForInfoDictionaryKey:@"CFBundleVersion"]?:@"unknown";
+            summary[@"crossThreadComparisonPending"]=@(singleThread);
             summary[@"wallSeconds"]=@(secondsSince(trace.start));
             NSData *json=[NSJSONSerialization dataWithJSONObject:summary options:NSJSONWritingPrettyPrinted error:nil];
             NSString *path=documentPath([NSString stringWithFormat:@"last-experiment-%@.json",route]);
@@ -135,6 +139,7 @@
         std::vector<Variant> variants;
         if([route isEqual:@"flow-buckets"])variants={{384,4,false},{352,4,false},{320,4,false}};
         else if([route isEqual:@"flow-threads"])variants={{384,4,false},{384,2,false},{384,3,false}};
+        else if(singleThread)variants={{384,[[route substringFromIndex:route.length-1] intValue],false}};
         else variants={{384,4,false},{384,4,true}};
         std::vector<float> reference;
         bool allEquivalent=true,allSupported=true;
@@ -151,6 +156,7 @@
             std::fill(mask.begin(),mask.begin()+effective,1.0f);
             auto started=std::chrono::steady_clock::now();
             double setup=0,first=0,warm=0,replayL2=0;
+            int completedRuns=0,firstCompletedSteps=0;
             bool valid=true;
             {
                 Graph flow(variant.threads,true);
@@ -169,9 +175,11 @@
                         std::vector<float> t={step?midpoint:0.f},v;
                         valid=flow.inputFloat("x",x)&&flow.inputFloat("mask",mask)&&flow.inputFloat("mu",paddedMu)&&flow.inputFloat("spks",spks)&&flow.inputFloat("cond",cond)&&flow.inputFloat("t",t)&&flow.run()&&flow.output("estimator_out",x.size(),v);
                         if(valid){float dt=step?1.f-midpoint:midpoint;for(size_t i=0;i<x.size();++i)x[i]+=dt*v[i];valid=finite(x);}
+                        if(!run&&valid)firstCompletedSteps=step+1;
                         if(!sampledBudgetOK(trace))return finish(false,@"Flow前向期间曾低于800 MB，停止路线");
                     }
-                    double elapsed=secondsSince(started);if(!run)first=elapsed;else warm+=elapsed/2;
+                    double elapsed=secondsSince(started);if(!run)first=elapsed;else if(valid)warm+=elapsed;
+                    if(valid)++completedRuns;
                     if(valid){
                         mel.resize(80*140);for(int c=0;c<80;++c)std::copy(x.begin()+c*n+kPromptFrames,x.begin()+c*n+effective,mel.begin()+c*140);
                         if(!run)firstMel=mel;
@@ -188,15 +196,30 @@
             auto compared=CosyVoiceProbe::compare(reference,mel);
             bool equivalent=valid&&compared.valid&&compared.relativeL2<=1e-3&&replayL2<=1e-3;
             allEquivalent=allEquivalent&&equivalent;
-            NSString *status=!valid?@"nonfinite-or-run-failure":(variant.bf16&&backend!=13?@"unsupported-or-fallback":(equivalent?@"pass":@"needs-quality-review"));
-            [rows addObject:@{@"frames":@(n),@"threads":@(variant.threads),@"actualThreads":@(actualThreads),@"thermalStart":@(thermalStart),@"thermalEnd":@(NSProcessInfo.processInfo.thermalState),@"requestedPrecision":variant.bf16?@"BF16":@"High",
-                @"backend":@(backend),@"setupSeconds":@(setup),@"firstTwoStepsSeconds":@(first),@"warmTwoStepsMeanSeconds":@(warm),
-                @"finite":@(valid),@"melRelativeL2":compared.valid?@(compared.relativeL2):NSNull.null,@"repeatRelativeL2":@(replayL2),@"status":status,
-                @"peakFootprintMB":@(memory.peak.load()/1e6),@"minAvailableMB":@(memory.available.load()/1e6),@"audioSeconds":@2.8}];
-            trace.record([NSString stringWithFormat:@"%@：%d帧/%d线程；首次两步%.3f，预热两步%.3f秒；Mel L2 %.8g；峰值%.0f MB，最低余量%.0f MB；非整链RTF",status,n,variant.threads,first,warm,compared.relativeL2,memory.peak.load()/1e6,memory.available.load()/1e6]);
+            double warmMean=completedRuns>1?warm/(completedRuns-1):0;
+            NSString *status=!valid?@"nonfinite-or-run-failure":(variant.bf16&&backend!=13?@"unsupported-or-fallback":(equivalent?(singleThread?@"finite-repeat-pass-cross-thread-pending":@"pass"):@"needs-quality-review"));
+            NSMutableDictionary *row=[@{@"frames":@(n),@"threads":@(variant.threads),@"actualThreads":@(actualThreads),@"thermalStart":@(thermalStart),@"thermalEnd":@(NSProcessInfo.processInfo.thermalState),@"requestedPrecision":variant.bf16?@"BF16":@"High",
+                @"backend":@(backend),@"setupSeconds":@(setup),@"firstAttemptSeconds":@(first),@"firstCompletedSteps":@(firstCompletedSteps),@"completedRuns":@(completedRuns),
+                @"firstTwoStepsSeconds":firstCompletedSteps==2?@(first):NSNull.null,@"warmTwoStepsMeanSeconds":completedRuns>1?@(warmMean):NSNull.null,
+                @"finite":@(valid),@"melRelativeL2":!singleThread&&compared.valid?@(compared.relativeL2):NSNull.null,@"repeatRelativeL2":@(replayL2),@"status":status,
+                @"peakFootprintMB":@(memory.peak.load()/1e6),@"minAvailableMB":@(memory.available.load()/1e6),@"audioSeconds":@2.8} mutableCopy];
+            if(singleThread&&valid) {
+                row[@"fixtureID"]=@"real70-prompt87-effective314-noise-v1-f32-native";
+                row[@"melShape"]=@[@80,@140];
+                row[@"melF32Base64"]=[[NSData dataWithBytes:mel.data() length:mel.size()*sizeof(float)] base64EncodedStringWithOptions:0];
+                row[@"byteOrder"]=@"little-endian";
+                NSMutableDictionary *stamps=[NSMutableDictionary dictionary];
+                for(NSString *name in @[@"flow.cfg-student-2step.batch1.fp16.mnn",@"flow.cfg-student-2step.batch1.fp16.mnn.weight",@"flow-conditioner.fp32.mnn",@"prompt-speech-tokens.csv",@"rand-noise.bin",@"prompt-cond.bin",@"spks.bin"]) {
+                    NSDictionary *a=[NSFileManager.defaultManager attributesOfItemAtPath:[directory stringByAppendingPathComponent:name] error:nil];
+                    stamps[name]=@{@"bytes":a[NSFileSize]?:@0,@"modifiedEpoch":@([a[NSFileModificationDate] timeIntervalSince1970])};
+                }
+                row[@"modelFileStamps"]=stamps; // File identity hints, NOT cryptographic hashes.
+            }
+            [rows addObject:row];
+            trace.record([NSString stringWithFormat:@"%@：%d帧/%d线程；首轮尝试%.3f秒，完成%d/2步；完整前向%d轮；预热两步均值=%@；Mel跨组L2=%@；峰值%.0f MB，最低余量%.0f MB；非整链RTF",status,n,variant.threads,first,firstCompletedSteps,completedRuns,row[@"warmTwoStepsMeanSeconds"],row[@"melRelativeL2"],memory.peak.load()/1e6,memory.available.load()/1e6]);
             // Numerical failure is reported, not silently replaced with High.
             if(!valid)trace.record(@"本组失败；会话已释放；只在内存恢复后继续其他组，不生成候选WAV");
         }
-        return finish(allEquivalent&&allSupported,allEquivalent&&allSupported?@"Flow路线完成：有限值与Mel一致性门槛通过；未测端到端音质/长文":@"路线完成但候选未全部通过；偏差/回退均保留报告，默认仍High4线程");
+        return finish(allEquivalent&&allSupported,allEquivalent&&allSupported?(singleThread?@"独立线程完成：有限值/重复一致性通过；原始Mel已存统一报告，跨线程L2仍待复核":@"Flow路线完成：有限值与Mel一致性门槛通过；未测端到端音质/长文"):@"路线完成但候选未全部通过；偏差/回退均保留报告，默认仍High4线程");
     }
 }

@@ -29,6 +29,7 @@ final class SentenceStream: ObservableObject {
     private var started = 0.0
     private var stopping = false
     private var player: ChunkPlayer?
+    private var reportID: String?
     static var documents: URL { FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0] }
     static var logURL: URL { documents.appendingPathComponent("last-sentence-stream.log") }
     static var audioURL: URL { documents.appendingPathComponent("last-sentence-stream.wav") }
@@ -46,6 +47,9 @@ final class SentenceStream: ObservableObject {
         audioSeconds = 0; computeSeconds = 0; startupSeconds = 0; generatedCount = 0; plannedCount = plan.count
         firstQueuedSeconds = nil; peakMB = 0; minAvailableMB = .greatestFiniteMagnitude
         started = ProcessInfo.processInfo.systemUptime
+        reportID = DiagnosticReport.begin(kind: "sentence-generation", label: resident ? "自适应常驻/串行回退" : "串行基线",
+            parameters: ["text": text, "optimized": optimized, "threads": threads, "hiFTLow": lowHiFT,
+                         "adaptive": resident, "initialSegments": plan.count], sources: DiagnosticReport.sentenceSources)
         try? Data().write(to: Self.logURL, options: .atomic)
         try? Data().write(to: diagnostics, options: .atomic)
         record("开始句级流水：\(plan.count) 段；\(optimized ? "32 帧对齐/DSP 优化" : "v0.4.1 基线")；CPU \(threads) 线程；播放队列目标≤2秒、硬上限4秒；至多1句待播文件；不是 token 级流式")
@@ -179,12 +183,22 @@ final class SentenceStream: ObservableObject {
     private func run(plan: [String], directory: String, optimized: Bool, threads: Int, player: ChunkPlayer, resident: Bool, lowHiFT: Bool) async {
         var writer: AVAudioFile?
         var residentSession: CosyVoiceResidentFlow?
+        var completedPlayback = false
         // Only these two app-owned scratch files can be replaced/removed here.
         let slots = (0...1).map { Self.documents.appendingPathComponent("sentence-stream-slot-\($0).wav") }
         defer {
             writer = nil
             for url in slots { try? FileManager.default.removeItem(at: url) }
             playbackTask = nil; task = nil; isRunning = false
+            DiagnosticReport.finish(reportID, state: completedPlayback ? "completed" : (stopping ? "cancelled" : "not-completed"),
+                result: ["message": status, "generatedSegments": generatedCount, "plannedSegments": plannedCount,
+                         "audioSeconds": audioSeconds, "computeSeconds": computeSeconds, "startupSeconds": startupSeconds,
+                         "computeRTF": audioSeconds > 0 ? computeSeconds / audioSeconds : NSNull(),
+                         "firstQueuedSeconds": firstQueuedSeconds.map { $0 as Any } ?? NSNull(),
+                         "peakFootprintMB": peakMB, "minAvailableMB": minAvailableMB,
+                         "completedAudio": hasCompletedAudio, "completedPlayback": completedPlayback,
+                         "queueGaps": player.gapCount, "queueGapSeconds": player.gapSeconds, "tokenStreaming": false])
+            reportID = nil
         }
         var pending = plan.map { (text: $0, depth: 0) }
         var at = 0
@@ -277,6 +291,7 @@ final class SentenceStream: ObservableObject {
             }
             record(String(format: "播放完成；队列断供观测 %d 次/%.3f 秒；非 token 级流式", player.gapCount, player.gapSeconds))
             status = String(format: "完成 %d 段 / %.2f 秒音频；计算 RTF %.3f；首块入队 %.3f 秒；队列断供 %d 次。", generatedCount, audioSeconds, computeSeconds / audioSeconds, firstQueuedSeconds ?? -1, player.gapCount)
+            completedPlayback = true
         } catch {
             playbackTask?.cancel(); player.stop()
             status = stopping ? "已停止；当前模型已返回，未继续生成。" : "停止：\(error.localizedDescription)"

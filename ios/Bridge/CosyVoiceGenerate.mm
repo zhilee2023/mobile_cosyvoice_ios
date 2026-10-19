@@ -311,14 +311,22 @@ bool generateSpeechTokens(NSString *directory, NSString *text, const std::vector
             *failure = @"LLM 前向前可用内存不足";
             return false;
         }
+        const auto *beforeContext = llm->getContext();
+        const int64_t prefillBefore = beforeContext ? beforeContext->prefill_us : 0;
+        const int64_t decodeBefore = beforeContext ? beforeContext->decode_us : 0;
         started = std::chrono::steady_clock::now();
         auto output = llm->generate(input, outputLimit);
         if (!sampledBudgetOK(trace)) { *failure=@"LLM前向期间可用内存或20ms采样低于800 MB，停止"; return false; }
         const auto *context = llm->getContext();
+        const int64_t prefillAfter = context ? context->prefill_us : 0;
+        const int64_t decodeAfter = context ? context->decode_us : 0;
+        double prefillSeconds = (prefillAfter >= prefillBefore ? prefillAfter-prefillBefore : prefillAfter)/1e6;
+        double decodeSeconds = (decodeAfter >= decodeBefore ? decodeAfter-decodeBefore : decodeAfter)/1e6;
         if(metrics) {
             metrics[@"forwardSeconds"]=@(secondsSince(started));
-            metrics[@"prefillSeconds"]=@(context?context->prefill_us/1e6:0.0);
-            metrics[@"decodeSeconds"]=@(context?context->decode_us/1e6:0.0);
+            metrics[@"prefillSeconds"]=@(prefillSeconds);
+            metrics[@"decodeSeconds"]=@(decodeSeconds);
+            metrics[@"counterScope"]=@"per-request delta; reset-to-zero fallback";
         }
         bool eos = context && context->status == MNN::Transformer::LlmStatus::NORMAL_FINISHED;
         int invalidCount = 0;
@@ -328,8 +336,8 @@ bool generateSpeechTokens(NSString *directory, NSString *text, const std::vector
             else ++invalidCount;
         }
         trace.record([NSString stringWithFormat:@"LLM 完成 %.3f 秒；prefill=%.3f 秒，decode=%.3f 秒；speech=%zu，非法=%d，EOS=%@，status=%d",
-                      secondsSince(started), context ? context->prefill_us / 1e6 : 0.0,
-                      context ? context->decode_us / 1e6 : 0.0, speech.size(), invalidCount,
+                      secondsSince(started), prefillSeconds,
+                      decodeSeconds, speech.size(), invalidCount,
                       eos ? @"是" : @"否", context ? int(context->status) : -1]);
         if (speech.empty() || invalidCount || (!residentProbe && (!eos || speech.size() > speechLimit))) {
             *limitReached = !invalidCount && speech.size() >= speechLimit && (!eos || speech.size() > speechLimit);
