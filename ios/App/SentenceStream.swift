@@ -49,7 +49,7 @@ final class SentenceStream: ObservableObject {
         try? Data().write(to: Self.logURL, options: .atomic)
         try? Data().write(to: diagnostics, options: .atomic)
         record("开始句级流水：\(plan.count) 段；\(optimized ? "32 帧对齐/DSP 优化" : "v0.4.1 基线")；CPU \(threads) 线程；播放队列目标≤2秒、硬上限4秒；至多1句待播文件；不是 token 级流式")
-        record(resident ? "本批唯一Flow384常驻，固定4线程/DSP优化；每句重新prefill、释放LLM后运行HiFT；每段最多105语音token/4.2秒，不保留跨句KV" : "对照版：每句释放全部模型，每段最多160语音token/6.4秒")
+        record(resident ? "自适应路线：尝试唯一Flow384；LLM前1800MB不足则释放Flow，本批改串行；每句重新prefill，无跨句KV；800MB底线不变" : "对照版：每句释放全部模型，每段最多160语音token/6.4秒")
         record("HiFT core=\(lowHiFT ? "Low" : "High")，F0与Flow仍High；非token级流式")
         task = Task { await run(plan: plan, directory: directory, optimized: optimized, threads: threads, player: player, resident: resident, lowHiFT: lowHiFT) }
     }
@@ -200,7 +200,7 @@ final class SentenceStream: ObservableObject {
                 guard setup["success"] as? Bool == true, residentSession != nil else {
                     throw SentenceStreamError.failed(setup["message"] as? String ?? "常驻Flow初始化失败。")
                 }
-                record(String(format: "常驻初始化 %.3f 秒，计入总计算RTF；后续句段读取/创建/resize=0", startupSeconds))
+                record(String(format: "常驻初始化 %.3f 秒，计入总计算RTF；仅实际常驻的句段读取/创建/resize=0，回退后重新加载", startupSeconds))
                 try Task.checkCancellation()
             }
             writer = try AVAudioFile(forWriting: partialURL,
@@ -220,6 +220,9 @@ final class SentenceStream: ObservableObject {
                 peakMB = max(peakMB, output["peakFootprintMB"] as? Double ?? 0)
                 minAvailableMB = min(minAvailableMB, output["minAvailableMB"] as? Double ?? .greatestFiniteMagnitude)
                 captureDiagnostics(sentence: at + 1, result: output)
+                if let mode = output["executionMode"] as? String {
+                    record("本句实际路线：\(mode)；累计回退 \(output["fallbackCount"] ?? 0)；失败/等待/重试均已计入耗时")
+                }
                 try Task.checkCancellation()
                 if output["success"] as? Bool != true {
                     if output["retrySplit"] as? Bool == true, pending[at].depth < 3, pending[at].text.count > 1 {

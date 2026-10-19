@@ -18,6 +18,8 @@ NS_ASSUME_NONNULL_BEGIN
 + (NSDictionary<NSString *, id> *)generateText:(NSString *)text atDirectory:(NSString *)directory optimized:(BOOL)optimized cpuThreads:(NSInteger)threads;
 + (NSDictionary<NSString *, id> *)generateText:(NSString *)text atDirectory:(NSString *)directory optimized:(BOOL)optimized cpuThreads:(NSInteger)threads lowPrecisionHiFT:(BOOL)low;
 + (NSDictionary<NSString *, NSNumber *> *)memorySnapshot;
+// Isolated controlled routes. No automatic promotion to production settings.
++ (NSDictionary<NSString *, id> *)runExperiment:(NSString *)route atDirectory:(NSString *)directory;
 + (NSDictionary<NSString *, id> *)probeHiFTPrecisionAtDirectory:(NSString *)directory;
 + (NSDictionary<NSString *, id> *)probeResidentFlowAtDirectory:(NSString *)directory;
 + (NSString *)hiftProbeLogPath;

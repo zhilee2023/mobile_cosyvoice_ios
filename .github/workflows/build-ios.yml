@@ -34,6 +34,7 @@ jobs:
           cd MNN
           sh package_scripts/ios/buildiOS.sh \
             -DMNN_LOW_MEMORY=ON \
+            -DMNN_SUPPORT_BF16=ON \
             -DMNN_SUPPORT_TRANSFORMER_FUSE=ON \
             -DMNN_BUILD_LLM=ON \
             -DMNN_LLM_BUILD_DEMO=OFF \
@@ -45,6 +46,12 @@ jobs:
           cp -R MNN/MNN-iOS-CPU-GPU/Static/MNN.framework Vendor/
           test -f Vendor/MNN.framework/MNN
           test -f Vendor/MNN.framework/Headers/llm/llm.hpp
+          python3 - <<'PY'
+          import subprocess
+          symbols = subprocess.check_output(['nm', '-g', 'Vendor/MNN.framework/MNN'], text=True)
+          assert 'BF16Functions' in symbols, 'BF16 build flag did not produce BF16 runtime symbols'
+          print('BF16 runtime symbols present; actual operator/backend use still needs phone validation')
+          PY
       - name: Generate Xcode project
         run: xcodegen generate
       - name: Build unsigned app

@@ -6,6 +6,7 @@
 
 ## 当前状态
 
+- v0.7.0（build14）清理已有结论的探针UI，增加六条独立路线（Flow尺寸/线程/BF16、LLM复用/线程、HiFT线程），固定输入记录首次/预热、数值偏差和内存；不自动替换默认配置。常驻句级新增1800 MB加载规划与释放Flow转串行回退，800 MB底线不变。所有新配置的真机收益仍待测，W8缺原始导出链暂不可运行。见 [路线、验收与边界](docs/experiments-v070.md)。
 - v0.6.1（build13）按用户试听选择默认HiFT core Low，F0/Flow仍High，保留High开关；普通和唯一Flow常驻的句级流水均接通，所有生成增加20ms采样与HiFT resize后800 MB余量保护。PC Low三句回归通过。另完成EOS前出PCM的KV暂停/续推实验，但现有离线图的声学一致性门槛未通过，**不把句级版冒充正式token级流式**；手机内存/RTF仍待真机。见 [Low版、内存策略与token级阻碍](docs/low-stream-v061.md)。
 - v0.6.0 新增独立“按句生成 · 常驻Flow384”入口：整批唯一CPU High Flow，4线程、两步不变，每句重新prefill并销毁LLM后才运行HiFT High；超105 speech token（约4.2秒）拆句重做，结束/取消/失败后关闭Flow，保留原逐句释放基线。只有短KV共驻探针已由iPhone确认（峰值2308 MB、最低可用913 MB）；完整整句/HiFT/长文共驻与RTF尚待新包真机验收，不承诺更快或绝不OOM。17个模型不变。见 [常驻句级版与测试步骤](docs/resident-sentences-v060.md)。
 - v0.5.1 新增两项隔离真机探针：HiFT core High/Low相同Mel/F0输入、各3次前向和两段2.96秒WAV；唯一384帧Flow会话在LLM加载前/存活时/释放后复用，LLM只decode2个token，约20ms采样内存。普通生成仍保持High和原内存门槛，不自动开启常驻或延长输出。PC调用顺序回归通过，iPhone精度/共驻尚待实测。见 [测试入口与验收边界](docs/optimization-probes-v051.md)。
