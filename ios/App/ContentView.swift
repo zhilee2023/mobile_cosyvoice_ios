@@ -70,9 +70,9 @@ struct ContentView: View {
                     Button("当前路线返回后停止") { experiments.stop() }
                         .disabled(!experiments.isRunning)
                     Text(experiments.status).font(.caption).textSelection(.enabled)
-                    Text("GPU测试分别冷启动，先256帧、再384帧。各测三轮两步Flow并对照CPU High；输入/执行/同步分项写入统一报告。GPU独立运行，无LLM或HiFT共驻。")
+                    Text("冷启动后单独测首个NaN算子。同步检查每步输入和输出，出现异常后返回算子名、类型、形状及最近8个算子；结果进入同一个统一报告。")
                         .font(.caption).foregroundStyle(.secondary)
-                    Text("前向前规划余量1100 MB，20ms采样底线800 MB；本项不生成声音，模块耗时不能当整链RTF。")
+                    Text("最多60秒，每个浮点tensor最多读取8MB；前向前余量1100 MB，20ms采样底线800 MB。逐算子同步会改变耗时，这项只定位数值问题。")
                         .font(.caption).foregroundStyle(.secondary)
                   }
                 }

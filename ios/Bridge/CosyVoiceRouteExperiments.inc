@@ -2,7 +2,7 @@
 // every acoustic variant has a fresh session, never a hidden session pool.
 + (NSDictionary<NSString *, id> *)runExperiment:(NSString *)route atDirectory:(NSString *)directory {
     @autoreleasepool {
-        NSSet *allowed = [NSSet setWithArray:@[@"flow-buckets",@"flow-threads",@"flow-thread-4",@"flow-thread-2",@"flow-thread-3",@"flow-bf16",@"llm-reuse",@"llm-threads",@"hift-threads",@"flow-metal-low-256",@"flow-metal-low-384"]];
+        NSSet *allowed = [NSSet setWithArray:@[@"flow-buckets",@"flow-threads",@"flow-thread-4",@"flow-thread-2",@"flow-thread-3",@"flow-bf16",@"llm-reuse",@"llm-threads",@"hift-threads",@"flow-metal-low-256",@"flow-metal-low-384",@"flow-metal-nan"]];
         if (![allowed containsObject:route]) return @{@"success":@NO,@"message":@"未知试验路线"};
         Trace trace([NSString stringWithFormat:@"last-experiment-%@.log",route]);
         MemorySampler allMemory; trace.sampler=&allMemory;
@@ -15,6 +15,8 @@
             summary[@"route"]=route; summary[@"rows"]=rows;
             summary[@"wholeChainRTFMeasured"]=@NO;
             summary[@"automaticPromotion"]=@NO;
+            summary[@"diagnosticOnly"]=@([route isEqual:@"flow-metal-nan"]);
+            if ([route isEqual:@"flow-metal-nan"]) summary[@"numericalInferencePassed"]=@NO;
             summary[@"version"]=[NSBundle.mainBundle objectForInfoDictionaryKey:@"CFBundleShortVersionString"]?:@"unknown";
             summary[@"build"]=[NSBundle.mainBundle objectForInfoDictionaryKey:@"CFBundleVersion"]?:@"unknown";
             summary[@"crossThreadComparisonPending"]=@(singleThread);

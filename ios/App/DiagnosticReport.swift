@@ -14,7 +14,7 @@ enum DiagnosticReport {
     static let sentenceSources = ["last-sentence-stream.log", "last-sentence-diagnostics.log", "last-resident-lifecycle.log", "last-pipeline-lifecycle.log"] + generationSources
     static func prepare() {
         do {
-            let routes = ["flow-buckets", "flow-threads", "flow-thread-4", "flow-thread-2", "flow-thread-3", "llm-reuse", "llm-threads", "hift-threads", "flow-bf16", "flow-metal-low-256", "flow-metal-low-384"]
+            let routes = ["flow-buckets", "flow-threads", "flow-thread-4", "flow-thread-2", "flow-thread-3", "llm-reuse", "llm-threads", "hift-threads", "flow-bf16", "flow-metal-low-256", "flow-metal-low-384", "flow-metal-nan"]
             let oldFiles = sentenceSources + ["last-experiment-summary.log"] + routes.flatMap { ["last-experiment-\($0).json", "last-experiment-\($0).log"] }
             try archive.importLegacyOnce(sources: oldFiles)
             try archive.recoverInterrupted()

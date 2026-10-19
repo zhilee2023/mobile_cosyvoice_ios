@@ -1,7 +1,8 @@
 // Included in runExperiment after its report, sampler and prompt are ready.
 // Each button owns one Metal session, then destroys it before CPU reference.
-if ([route hasPrefix:@"flow-metal-low-"]) {
-    const int frames = [route hasSuffix:@"256"] ? 256 : 384;
+if ([route hasPrefix:@"flow-metal-low-"] || [route isEqual:@"flow-metal-nan"]) {
+    const bool diagnose = [route isEqual:@"flow-metal-nan"];
+    const int frames = diagnose || [route hasSuffix:@"256"] ? 256 : 384;
     const int speechCount = frames == 256 ? 25 : 70;
     const int targetFrames = 2 * speechCount;
     const int effective = kPromptFrames + targetFrames;
@@ -99,6 +100,13 @@ if ([route hasPrefix:@"flow-metal-low-"]) {
                     const double inputSeconds = secondsSince(stepStart);
                     if (!sampledBudgetOK(trace)) { row[@"status"] = @"memory-after-input"; return false; }
                     auto phaseStart = std::chrono::steady_clock::now();
+                    if (metal && diagnose) {
+                        NSDictionary *diagnostic = diagnoseMetalNaN(flow, trace);
+                        row[@"operatorDiagnosis"] = diagnostic;
+                        row[@"status"] = diagnostic[@"stopReason"];
+                        runRow[@"status"] = diagnostic[@"stopReason"];
+                        return false;
+                    }
                     if (!flow.run()) { row[@"status"] = @"run-failed"; return false; }
                     const double runSeconds = secondsSince(phaseStart);
                     phaseStart = std::chrono::steady_clock::now();
@@ -143,7 +151,12 @@ if ([route hasPrefix:@"flow-metal-low-"]) {
         return finalizeRow(ok);
     };
     if (!waitAvailable(2900000000ULL, trace, @"Metal独立会话前")) return finish(false, @"请冷启动单独测；未加载GPU");
-    if (!runBackend(true, gpuMel)) return finish(false, @"Metal前向、数值或内存门槛未通过；详见本路线分项，无自动CPU替代");
+    const bool gpuOK = runBackend(true, gpuMel);
+    if (diagnose) {
+        NSDictionary *diagnostic = [rows.lastObject objectForKey:@"operatorDiagnosis"];
+        return finish([diagnostic[@"completed"] boolValue], [NSString stringWithFormat:@"GPU算子定位：%@；仅诊断完成状态，不表示GPU数值通过；请分享统一报告", diagnostic[@"stopReason"] ?: @"内存或加载门槛停止"]);
+    }
+    if (!gpuOK) return finish(false, @"Metal前向、数值或内存门槛未通过；详见本路线分项，无自动CPU替代");
     // Never overlap CPU and GPU model lifetimes. Residual Metal allocations may
     // take time to retire; preserve GPU data if the reference cannot start.
     if (!waitAvailable(2500000000ULL, trace, @"释放Metal后CPU参考前")) return finish(false, @"GPU有限前向已完成，CPU参考因回收余量不足未运行；尚未完成数值对照");

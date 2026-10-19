@@ -18,6 +18,7 @@
 #include <fcntl.h>
 #include <functional>
 #include <iterator>
+#include <limits>
 #include <memory>
 #include <mutex>
 #include <numeric>
@@ -489,6 +490,7 @@ struct Graph {
     }
     void releaseModel() { net->releaseModel(); }
 };
+#include "CosyVoiceMetalDiagnostics.inc"
 int reflected(int index, int length) {
     while (index < 0 || index >= length) index = index < 0 ? -index : 2 * length - 2 - index;
     return index;

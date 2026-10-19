@@ -39,10 +39,12 @@ enum ExperimentCatalog {
               conclusion: "最新三句8.52秒音频，计算RTF1.518、首块7.95秒、最低余量1601MB，未观察到断供；更长文本仍待验收。", execution: .sentence),
         .init(id: "flow-metal-low-memory-256", title: "Metal Low 256帧会话内存", state: .archived,
               conclusion: "v0.7.5两次主后端Metal，峰值2062–2092MB、最低余量1129–1159MB；仅resize通过，尚无GPU前向结果。"),
-        .init(id: "flow-metal-low-256", title: "① GPU 256帧：两步Flow＋CPU数值对照", state: .available,
-              conclusion: "25个固定speech token；Metal Low/NoTune三轮，GPU释放后同输入CPU High参考；分别冷启动测。"),
-        .init(id: "flow-metal-low-384", title: "② GPU 384帧：两步Flow＋CPU数值对照", state: .available,
-              conclusion: "70个固定speech token；先完成256帧，再冷启动测384；800MB底线与前向前1100MB规划均保留。")
+        .init(id: "flow-metal-low-256", title: "GPU 256帧两步Flow", state: .archived,
+              conclusion: "v0.7.6第一步17920/20480个值NaN，有效224帧均受影响；最低余量1115MB，属于数值失败。"),
+        .init(id: "flow-metal-low-384", title: "GPU 384帧两步Flow", state: .archived,
+              conclusion: "v0.7.6第一步25120/30720个值NaN，有效314帧均受影响；最低余量1106MB，未形成有效GPU测速。"),
+        .init(id: "flow-metal-nan", title: "定位 GPU 首个 NaN 算子（256帧）", state: .available,
+              conclusion: "逐算子同步检查输入/输出，遇到首个异常即返回；最多60秒，800MB底线；诊断耗时不作测速。")
     ]
     static var available: [Route] { routes.filter { $0.state == .available } }
     static var archived: [Route] { routes.filter { $0.state == .archived } }

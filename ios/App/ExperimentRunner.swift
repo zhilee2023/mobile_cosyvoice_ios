@@ -26,15 +26,17 @@ final class ExperimentRunner: ObservableObject {
                 status = "\(index + 1)/\(routes.count)：\(title)；请保持前台。当前路线返回后才可停止。"
                 record(status)
                 let runID = DiagnosticReport.begin(kind: "module-experiment", label: title,
-                    parameters: ["route": route, "wholeChainRTFMeasured": false],
+                    parameters: ["route": route, "wholeChainRTFMeasured": false, "diagnosticOnly": route == "flow-metal-nan"],
                     sources: ["last-experiment-\(route).json", "last-experiment-\(route).log"])
                 let result: [String: Any] = await withCheckedContinuation { continuation in
                     worker.async { continuation.resume(returning: CosyVoiceGenerate.runExperiment(route, atDirectory: directory)) }
                 }
                 let passed = result["success"] as? Bool == true
+                let diagnostic = result["diagnosticOnly"] as? Bool == true
                 let message = result["message"] as? String ?? "无结果"
-                DiagnosticReport.finish(runID, state: passed ? "passed" : "not-passed", result: result)
-                record(String(format: "%@：%@；%@；采样峰值%.0f MB，最低可用%.0f MB；耗时%.3f秒。", title, passed ? "本路线门槛通过" : "未全部通过/未运行，请看分组数据", message, result["peakFootprintMB"] as? Double ?? 0, result["minAvailableMB"] as? Double ?? 0, result["wallSeconds"] as? Double ?? 0))
+                DiagnosticReport.finish(runID, state: diagnostic ? (passed ? "diagnostic-completed" : "diagnostic-stopped") : (passed ? "passed" : "not-passed"), result: result)
+                let status = diagnostic ? (passed ? "诊断已完成，数值尚未修复" : "诊断提前停止") : (passed ? "本路线门槛通过" : "未全部通过/未运行，请看分组数据")
+                record(String(format: "%@：%@；%@；采样峰值%.0f MB，最低可用%.0f MB；耗时%.3f秒。", title, status, message, result["peakFootprintMB"] as? Double ?? 0, result["minAvailableMB"] as? Double ?? 0, result["wallSeconds"] as? Double ?? 0))
                 completed += 1
             }
             status = "已返回 \(completed)/\(routes.count) 条路线\(stopRequested ? "，按要求停止" : "")；返回不等于通过。只需分享统一测试报告；默认配置未自动更改。"
