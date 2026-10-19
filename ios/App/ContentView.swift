@@ -17,6 +17,7 @@ struct ContentView: View {
     @StateObject private var sentenceStream = SentenceStream()
     @State private var optimizedSentences = true
     @State private var sentenceThreads = 4
+    @State private var lowHiFT = true
     @State private var generationResult = "尚未运行手机模型生成"
     @State private var demoRunning = false
     @State private var firstChunkMilliseconds: Int?
@@ -54,6 +55,10 @@ struct ContentView: View {
                         .font(.caption).foregroundStyle(.secondary)
                 }
                 Section("句级生成与 RTF 对照 · 实验") {
+                    Toggle("HiFT core Low（已试听选择）", isOn: $lowHiFT)
+                        .disabled(generationRunning)
+                    Text("只切换声码器core；Flow仍High两步，F0仍High。关闭可回到High对照；不修改模型文件。")
+                        .font(.caption).foregroundStyle(.secondary)
                     Toggle("优化候选：缩小 Flow 补零尺寸 / DSP 查表", isOn: $optimizedSentences)
                         .disabled(generationRunning)
                     Picker("CPU 线程对照", selection: $sentenceThreads) {
@@ -66,12 +71,12 @@ struct ContentView: View {
                     Button(sentenceStream.isRunning ? "句级生成与播放中…" : "按句生成，首句完成即播放") {
                         wavPlayer?.stop()
                         sentenceStream.start(text: text, directory: models.directory.path,
-                                             optimized: optimizedSentences, threads: sentenceThreads, player: player)
+                                             optimized: optimizedSentences, threads: sentenceThreads, player: player, lowHiFT: lowHiFT)
                     }.disabled(!models.ready || generationRunning || probeRunning || memoryProbeRunning || demoRunning)
                     Button("按句生成 · 常驻Flow384 · 新实验") {
                         wavPlayer?.stop()
                         sentenceStream.start(text: text, directory: models.directory.path,
-                                             optimized: true, threads: 4, player: player, resident: true)
+                                             optimized: true, threads: 4, player: player, resident: true, lowHiFT: lowHiFT)
                     }.disabled(!models.ready || generationRunning || probeRunning || memoryProbeRunning || demoRunning)
                     Button("停止句级生成与播放") { sentenceStream.stop() }
                         .disabled(!sentenceStream.isRunning)
@@ -80,7 +85,7 @@ struct ContentView: View {
                         .font(.caption)
                     Text("每句释放模型；最多保留一条待播句段。停止后当前短句推理会先返回再释放。RTF>1时仍可能句间等待，分句本身不保证实时。关闭优化并选4线程可对照旧链路；2线程需另测。")
                         .font(.caption).foregroundStyle(.secondary)
-                    Text("新常驻入口固定4线程/DSP优化，不受上方开关控制：本批只保留一个384帧Flow，每段最多105语音token/4.2秒；每句重做prefill，LLM销毁后才跑HiFT High。超长拆句重做、不截断。正常完成、失败、停止后均关闭Flow。完整链路共驻内存与RTF尚待真机验证。")
+                    Text("新常驻入口固定4线程/DSP优化，HiFT精度由Low开关控制：本批只保留一个384帧Flow，每段最多105语音token/4.2秒；每句重做prefill，LLM销毁后才跑HiFT。超长拆句重做、不截断。结束/失败/停止均关闭Flow；最低余量800 MB，不足就停止，不自动降低门槛。完整链路内存与RTF仍需真机验证。")
                         .font(.caption).foregroundStyle(.secondary)
                     if FileManager.default.fileExists(atPath: SentenceStream.logURL.path) {
                         ShareLink("分享句级汇总日志", item: SentenceStream.logURL).disabled(generationRunning)
@@ -250,13 +255,14 @@ struct ContentView: View {
     private func runGeneration(lowPrecision: Bool = false, useText: Bool = false) {
         let path = models.directory.path
         let inputText = text
+        let useLowHiFT = lowHiFT
         wavPlayer?.stop()
         player.stop()
         singleGenerationRunning = true
         generationResult = "正在依次运行模型；若 App 退出，重开后分享生成日志…"
         DispatchQueue.global(qos: .userInitiated).async {
             let result = useText
-                ? CosyVoiceGenerate.generateText(inputText, atDirectory: path)
+                ? CosyVoiceGenerate.generateText(inputText, atDirectory: path, optimized: true, cpuThreads: 4, lowPrecisionHiFT: useLowHiFT)
                 : CosyVoiceGenerate.runFixedTokenSample(atDirectory: path, lowPrecisionFlow: lowPrecision)
             DispatchQueue.main.async {
                 singleGenerationRunning = false

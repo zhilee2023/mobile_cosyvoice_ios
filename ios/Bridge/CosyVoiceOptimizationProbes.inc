@@ -129,7 +129,17 @@
             for(int step=0;step<2;++step){
                 if(os_proc_available_memory()<800000000ULL){trace.record(@"共驻Flow前向前不足800 MB，停止");return false;}
                 std::vector<float> t={step?midpoint:0.0f},velocity;
-                if(!(flow->inputFloat("x",x)&&flow->inputFloat("mask",mask)&&flow->inputFloat("mu",paddedMu)&&flow->inputFloat("spks",spks)&&flow->inputFloat("cond",cond)&&flow->inputFloat("t",t)&&flow->run()&&flow->output("estimator_out",x.size(),velocity)))return false;
+                auto phaseStart=std::chrono::steady_clock::now();
+                double cpuStart=processCPUSeconds();
+                if(!(flow->inputFloat("x",x)&&flow->inputFloat("mask",mask)&&flow->inputFloat("mu",paddedMu)&&flow->inputFloat("spks",spks)&&flow->inputFloat("cond",cond)&&flow->inputFloat("t",t)))return false;
+                double inputSeconds=secondsSince(phaseStart);
+                auto runStart=std::chrono::steady_clock::now();
+                if(!flow->run())return false;
+                double runSeconds=secondsSince(runStart);
+                auto readStart=std::chrono::steady_clock::now();
+                if(!flow->output("estimator_out",x.size(),velocity))return false;
+                double readSeconds=secondsSince(readStart);
+                trace.record([NSString stringWithFormat:@"%@ 第%d步分项：input=%.4f run=%.4f read=%.4f秒；wall=%.4f 进程CPU累计=%.4f秒；thermal=%ld",phase,step+1,inputSeconds,runSeconds,readSeconds,secondsSince(phaseStart),processCPUSeconds()-cpuStart,(long)NSProcessInfo.processInfo.thermalState]);
                 float delta=step?1.0f-midpoint:midpoint;
                 for(size_t i=0;i<x.size();++i)x[i]+=delta*velocity[i];
                 if(!finite(x)||memory.available.load()<800000000ULL){trace.record(@"共驻输出非有限或20ms采样低于800 MB");return false;}

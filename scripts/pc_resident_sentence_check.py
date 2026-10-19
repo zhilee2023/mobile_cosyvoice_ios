@@ -6,6 +6,7 @@ Each sentence gets a new LLM; ONE 384-frame Flow survives all HiFT calls.
 from __future__ import annotations
 
 import gc
+import argparse
 import json
 from pathlib import Path
 import time
@@ -31,9 +32,12 @@ def accepted(raw: list[int], status: int) -> tuple[list[int], bool]:
 
 
 def main() -> int:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--hift-low", action="store_true")
+    args = parser.parse_args()
     started = time.perf_counter()
     model = ROOT / "models" / "CosyVoice3"
-    output = ROOT / "builds" / "resident-sentences-v060"
+    output = ROOT / "builds" / ("resident-sentences-v061-low" if args.hift_low else "resident-sentences-v060")
     output.mkdir(parents=True, exist_ok=True)
     config = json.loads((model / "config-cpu-cosyvoice-ras.json").read_text())
     config.update(base_dir=model.as_posix() + "/", backend_type="cpu", thread_num=4,
@@ -101,7 +105,7 @@ def main() -> int:
         mel = reuse(mu)
         if first_mu is None:
             first_mu,first_mel = mu.copy(),mel.copy()
-        pcm,times = hift(model,mel)  # High F0/core; resident Flow remains alive.
+        pcm,times = hift(model,mel,core_precision="low" if args.hift_low else "high",core_memory="low" if args.hift_low else "normal")
         assert len(pcm) == len(target)*2*480 and np.isfinite(pcm).all()
         rms = float(np.sqrt(np.mean(pcm.astype(np.float64)**2)))
         assert rms > .001 and np.abs(pcm).max() <= 1.001
@@ -121,7 +125,7 @@ def main() -> int:
     assert fresh_l2 < 1e-3
     write_wav(output / "three-sentences.wav",np.concatenate(pcms))
     report = dict(scope="Windows real-text/call-order/numerics ONLY; no iPhone memory/RTF/playback claim",
-                  resident_flow_resize_count=1,flow_frames=FRAMES,steps=2,speech_cap=CAP,
+                  resident_flow_resize_count=1,flow_frames=FRAMES,steps=2,speech_cap=CAP,hift_core="low" if args.hift_low else "high",
                   repeat_l2=repeat_l2,fresh_l2=fresh_l2,sentences=reports,
                   wall_seconds=time.perf_counter()-started)
     (output / "report.json").write_text(json.dumps(report,ensure_ascii=False,indent=2)+"\n",encoding="utf-8")

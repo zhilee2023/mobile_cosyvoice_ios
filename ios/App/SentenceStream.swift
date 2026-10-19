@@ -1,6 +1,10 @@
 import AVFoundation
 import Foundation
 
+// The native owner serializes generate/close with std::mutex. It is passed
+// to ONE inference queue, never used for parallel model computations.
+extension CosyVoiceResidentFlow: @unchecked Sendable {}
+
 enum SentenceStreamError: LocalizedError {
     case failed(String)
     var errorDescription: String? { if case let .failed(message) = self { return message }; return nil }
@@ -31,7 +35,7 @@ final class SentenceStream: ObservableObject {
     private var partialURL: URL { Self.documents.appendingPathComponent("last-sentence-stream.partial.wav") }
     private var diagnostics: URL { Self.documents.appendingPathComponent("last-sentence-diagnostics.log") }
 
-    func start(text: String, directory: String, optimized: Bool, threads: Int, player: ChunkPlayer, resident: Bool = false) {
+    func start(text: String, directory: String, optimized: Bool, threads: Int, player: ChunkPlayer, resident: Bool = false, lowHiFT: Bool = true) {
         guard !isRunning else { return }
         let plan: [String]
         do { plan = try SentencePlanner.plan(text, limit: resident ? 18 : SentencePlanner.defaultLimit) }
@@ -45,8 +49,9 @@ final class SentenceStream: ObservableObject {
         try? Data().write(to: Self.logURL, options: .atomic)
         try? Data().write(to: diagnostics, options: .atomic)
         record("开始句级流水：\(plan.count) 段；\(optimized ? "32 帧对齐/DSP 优化" : "v0.4.1 基线")；CPU \(threads) 线程；播放队列目标≤2秒、硬上限4秒；至多1句待播文件；不是 token 级流式")
-        record(resident ? "本批唯一Flow384常驻，固定4线程/DSP优化；每句重新prefill、释放LLM后运行HiFT High；每段最多105语音token/4.2秒，不保留跨句KV" : "对照版：每句释放全部模型，每段最多160语音token/6.4秒")
-        task = Task { await run(plan: plan, directory: directory, optimized: optimized, threads: threads, player: player, resident: resident) }
+        record(resident ? "本批唯一Flow384常驻，固定4线程/DSP优化；每句重新prefill、释放LLM后运行HiFT；每段最多105语音token/4.2秒，不保留跨句KV" : "对照版：每句释放全部模型，每段最多160语音token/6.4秒")
+        record("HiFT core=\(lowHiFT ? "Low" : "High")，F0与Flow仍High；非token级流式")
+        task = Task { await run(plan: plan, directory: directory, optimized: optimized, threads: threads, player: player, resident: resident, lowHiFT: lowHiFT) }
     }
 
     func stop() {
@@ -85,10 +90,10 @@ final class SentenceStream: ObservableObject {
         }
     }
 
-    private func infer(_ text: String, directory: String, optimized: Bool, threads: Int, session: CosyVoiceResidentFlow?) async -> [String: Any] {
+    private func infer(_ text: String, directory: String, optimized: Bool, threads: Int, session: CosyVoiceResidentFlow?, lowHiFT: Bool) async -> [String: Any] {
         await withCheckedContinuation { continuation in
             worker.async {
-                let result = session?.generateText(text) ?? CosyVoiceGenerate.generateText(text, atDirectory: directory, optimized: optimized, cpuThreads: threads)
+                let result = session?.generateText(text, lowPrecisionHiFT: lowHiFT) ?? CosyVoiceGenerate.generateText(text, atDirectory: directory, optimized: optimized, cpuThreads: threads, lowPrecisionHiFT: lowHiFT)
                 continuation.resume(returning: result)
             }
         }
@@ -171,7 +176,7 @@ final class SentenceStream: ObservableObject {
         return Double(input.length) / 24_000
     }
 
-    private func run(plan: [String], directory: String, optimized: Bool, threads: Int, player: ChunkPlayer, resident: Bool) async {
+    private func run(plan: [String], directory: String, optimized: Bool, threads: Int, player: ChunkPlayer, resident: Bool, lowHiFT: Bool) async {
         var writer: AVAudioFile?
         var residentSession: CosyVoiceResidentFlow?
         // Only these two app-owned scratch files can be replaced/removed here.
@@ -209,7 +214,7 @@ final class SentenceStream: ObservableObject {
                 status = "生成第 \(at + 1)/\(pending.count) 段；已生成 \(String(format: "%.2f", audioSeconds)) 秒，上一句可同时播放。"
                 record("句 \(at + 1)/\(pending.count) 开始，\(pending[at].text.utf16.count) UTF-16 单元")
                 let begin = ProcessInfo.processInfo.systemUptime
-                let output = await infer(pending[at].text, directory: directory, optimized: optimized, threads: threads, session: residentSession)
+                let output = await infer(pending[at].text, directory: directory, optimized: optimized, threads: threads, session: residentSession, lowHiFT: lowHiFT)
                 let elapsed = ProcessInfo.processInfo.systemUptime - begin
                 computeSeconds += elapsed
                 peakMB = max(peakMB, output["peakFootprintMB"] as? Double ?? 0)

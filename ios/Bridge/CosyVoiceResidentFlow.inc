@@ -41,11 +41,15 @@
 }
 
 - (NSDictionary<NSString *, id> *)generateText:(NSString *)text {
+    return [self generateText:text lowPrecisionHiFT:NO];
+}
+
+- (NSDictionary<NSString *, id> *)generateText:(NSString *)text lowPrecisionHiFT:(BOOL)low {
     std::lock_guard<std::mutex> guard(_lock);
     if (!_flow) return @{@"success": @NO, @"message": @"常驻Flow已关闭，不能继续生成"};
     ++_calls;
     NSDictionary *output = [CosyVoiceGenerate runAtDirectory:_directory text:text lowPrecisionFlow:NO
-        optimized:YES cpuThreads:4 prepareHiFT:NO resident:_flow.get()];
+        optimized:YES cpuThreads:4 prepareHiFT:NO resident:_flow.get() lowPrecisionHiFT:low];
     _flow->traceLog = nullptr; // Never retain a pointer to the returned call's stack Trace.
     return output;
 }

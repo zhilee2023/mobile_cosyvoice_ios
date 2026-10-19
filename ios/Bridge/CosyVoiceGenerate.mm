@@ -1,6 +1,7 @@
 #import "CosyVoiceGenerate.h"
 #include "CosyVoiceDSP.hpp"
 #include "CosyVoiceProbeMetrics.hpp"
+#include "CosyVoiceBudget.hpp"
 #import <MNN/Interpreter.hpp>
 #import <MNN/llm/llm.hpp>
 #import <mach/mach.h>
@@ -22,13 +23,14 @@
 #include <thread>
 #include <vector>
 #include <unistd.h>
+#include <sys/resource.h>
 
 namespace {
-constexpr int kPromptFrames = 174;
+constexpr int kPromptFrames = CosyVoiceBudget::promptFrames;
 constexpr int kTargetTokens = 25;
 constexpr int kMaxSpeechTokens = 160;
-constexpr int kResidentFlowFrames = 384;
-constexpr int kResidentSpeechTokens = (kResidentFlowFrames-kPromptFrames)/2;
+constexpr int kResidentFlowFrames = CosyVoiceBudget::residentFrames;
+constexpr int kResidentSpeechTokens = CosyVoiceBudget::speechCapacity;
 constexpr int kSpeechOffset = 151924;
 constexpr int kSpeechEos = kSpeechOffset + 6562;
 constexpr int kSampleRate = 24000;
@@ -53,6 +55,12 @@ constexpr int kProbeSpeechTokens[] = {
 
 double secondsSince(std::chrono::steady_clock::time_point start) {
     return std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
+}
+double processCPUSeconds() {
+    rusage usage{};
+    if (getrusage(RUSAGE_SELF, &usage) != 0) return -1;
+    return usage.ru_utime.tv_sec + usage.ru_utime.tv_usec/1e6 +
+           usage.ru_stime.tv_sec + usage.ru_stime.tv_usec/1e6;
 }
 NSString *documentPath(NSString *name) {
     NSURL *url = [NSFileManager.defaultManager URLsForDirectory:NSDocumentDirectory inDomains:NSUserDomainMask].firstObject;
@@ -136,7 +144,8 @@ bool waitAvailable(uint64_t minimum, Trace &trace, NSString *phase) {
     return false;
 }
 bool sampledBudgetOK(Trace &trace) {
-    return os_proc_available_memory()>=800000000ULL && (!trace.sampler || trace.sampler->available.load()>=800000000ULL);
+    auto current=os_proc_available_memory();
+    return CosyVoiceBudget::accepts(current,trace.sampler?trace.sampler->available.load():current);
 }
 bool readFloats(NSString *directory, NSString *name, size_t count, std::vector<float> &output) {
     NSData *data = [NSData dataWithContentsOfFile:[directory stringByAppendingPathComponent:name]];
@@ -458,6 +467,7 @@ bool writeWav(const std::vector<float> &samples, NSString *fileName = @"last-gen
 + (NSDictionary<NSString *, id> *)runAtDirectory:(NSString *)directory text:(nullable NSString *)text lowPrecisionFlow:(BOOL)lowPrecision optimized:(BOOL)optimized cpuThreads:(NSInteger)threads;
 + (NSDictionary<NSString *, id> *)runAtDirectory:(NSString *)directory text:(nullable NSString *)text lowPrecisionFlow:(BOOL)lowPrecision optimized:(BOOL)optimized cpuThreads:(NSInteger)threads prepareHiFT:(BOOL)prepareHiFT;
 + (NSDictionary<NSString *, id> *)runAtDirectory:(NSString *)directory text:(nullable NSString *)text lowPrecisionFlow:(BOOL)lowPrecision optimized:(BOOL)optimized cpuThreads:(NSInteger)threads prepareHiFT:(BOOL)prepareHiFT resident:(Graph *)resident;
++ (NSDictionary<NSString *, id> *)runAtDirectory:(NSString *)directory text:(nullable NSString *)text lowPrecisionFlow:(BOOL)lowPrecision optimized:(BOOL)optimized cpuThreads:(NSInteger)threads prepareHiFT:(BOOL)prepareHiFT resident:(Graph *)resident lowPrecisionHiFT:(BOOL)lowHiFT;
 @end
 
 @implementation CosyVoiceGenerate
@@ -487,6 +497,9 @@ bool writeWav(const std::vector<float> &samples, NSString *fileName = @"last-gen
 + (NSDictionary<NSString *, id> *)generateText:(NSString *)text atDirectory:(NSString *)directory optimized:(BOOL)optimized cpuThreads:(NSInteger)threads {
     return [self runAtDirectory:directory text:text lowPrecisionFlow:NO optimized:optimized cpuThreads:threads];
 }
++ (NSDictionary<NSString *, id> *)generateText:(NSString *)text atDirectory:(NSString *)directory optimized:(BOOL)optimized cpuThreads:(NSInteger)threads lowPrecisionHiFT:(BOOL)low {
+    return [self runAtDirectory:directory text:text lowPrecisionFlow:NO optimized:optimized cpuThreads:threads prepareHiFT:NO resident:nullptr lowPrecisionHiFT:low];
+}
 
 + (NSDictionary<NSString *, id> *)runAtDirectory:(NSString *)directory text:(nullable NSString *)text lowPrecisionFlow:(BOOL)lowPrecision optimized:(BOOL)optimized cpuThreads:(NSInteger)threads {
     return [self runAtDirectory:directory text:text lowPrecisionFlow:lowPrecision optimized:optimized cpuThreads:threads prepareHiFT:NO];
@@ -497,19 +510,25 @@ bool writeWav(const std::vector<float> &samples, NSString *fileName = @"last-gen
 }
 
 + (NSDictionary<NSString *, id> *)runAtDirectory:(NSString *)directory text:(nullable NSString *)text lowPrecisionFlow:(BOOL)lowPrecision optimized:(BOOL)optimized cpuThreads:(NSInteger)threads prepareHiFT:(BOOL)prepareHiFT resident:(Graph *)resident {
+    return [self runAtDirectory:directory text:text lowPrecisionFlow:lowPrecision optimized:optimized cpuThreads:threads prepareHiFT:prepareHiFT resident:resident lowPrecisionHiFT:NO];
+}
+
++ (NSDictionary<NSString *, id> *)runAtDirectory:(NSString *)directory text:(nullable NSString *)text lowPrecisionFlow:(BOOL)lowPrecision optimized:(BOOL)optimized cpuThreads:(NSInteger)threads prepareHiFT:(BOOL)prepareHiFT resident:(Graph *)resident lowPrecisionHiFT:(BOOL)lowHiFT {
     @autoreleasepool {
         Trace trace(prepareHiFT ? @"last-hift-precision.log" : @"last-generation.log");
         std::unique_ptr<MemorySampler> sampling;
-        if (resident) { sampling.reset(new MemorySampler()); trace.sampler=sampling.get(); resident->traceLog=&trace; }
+        sampling.reset(new MemorySampler()); trace.sampler=sampling.get();
+        if (resident) resident->traceLog=&trace;
         const int cpuThreads = threads == 2 ? 2 : 4;
         NSString *flowLabel = lowPrecision ? @"Flow CPU Low" : @"Flow CPU High";
         const bool textGeneration = text != nil;
-        trace.record([NSString stringWithFormat:@"开始：%@ → Conditioner CPU High → %@ → HiFT CPU High；串行生成 WAV",
+        trace.record([NSString stringWithFormat:@"HiFT配置：F0=High，core=%@；Flow精度不随HiFT变化；20ms采样/最低余量800 MB",lowHiFT?@"Low":@"High"], true);
+        trace.record([NSString stringWithFormat:@"开始：%@ → Conditioner CPU High → %@ → HiFT F0 High/core %@；串行生成 WAV",
                       prepareHiFT ? @"HiFT 精度对照准备：固定74个真实speech token" :
-                      (textGeneration ? @"当前文字→手机 LLM" : @"固定 25 个 PC speech token（不运行手机文字 LLM）"), flowLabel], true);
+                      (textGeneration ? @"当前文字→手机 LLM" : @"固定 25 个 PC speech token（不运行手机文字 LLM）"), flowLabel,lowHiFT?@"Low":@"High"]);
         trace.record([NSString stringWithFormat:@"运行参数：%d CPU 线程；%@；模型精度和两步 Flow 不变",
                       cpuThreads, optimized ? @"优化候选（Flow 32 帧对齐、DSP 查表）" : @"v0.4.1 基线"]);
-        if(resident)trace.record(@"完整常驻入口：真实当前文字，每句重新prefill；唯一384帧Flow复用，最多105 speech token/4.2秒；LLM释放后才运行HiFT High");
+        if(resident)trace.record(@"完整常驻入口：真实当前文字，每句重新prefill；唯一384帧Flow复用，最多105 speech token/4.2秒；LLM释放后才运行HiFT");
         if (textGeneration) {
             text = [text stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
             if (text.length == 0 || text.length > 40) {
@@ -620,19 +639,27 @@ bool writeWav(const std::vector<float> &samples, NSString *fileName = @"last-gen
                 trace.record([NSString stringWithFormat:@"%@ %d/2 开始；重新传入全部六个输入", flowLabel, step + 1]);
                 if(resident&&!sampledBudgetOK(trace))return result(false,@"常驻Flow前向前余量或20ms采样不足800 MB",trace);
                 auto started = std::chrono::steady_clock::now();
+                double cpuStarted = processCPUSeconds();
                 if (!(flow.inputFloat("x", x) && flow.inputFloat("mask", mask) &&
                       flow.inputFloat("mu", paddedMu) && flow.inputFloat("spks", spks) &&
-                      flow.inputFloat("cond", cond) && flow.inputFloat("t", time) && flow.run())) {
+                      flow.inputFloat("cond", cond) && flow.inputFloat("t", time))) {
                     trace.record(@"停止：Flow 输入或前向失败");
                     return result(false, @"Flow 前向失败", trace);
                 }
+                double inputSeconds = secondsSince(started);
+                auto runStarted = std::chrono::steady_clock::now();
+                if (!flow.run()) return result(false, @"Flow前向失败", trace);
+                double runSeconds = secondsSince(runStarted);
                 trace.record([NSString stringWithFormat:@"%@ %d/2 runSession 返回成功，%.3f 秒；开始读取输出",
                               flowLabel, step + 1, secondsSince(started)]);
                 std::vector<float> velocity;
+                auto readStarted = std::chrono::steady_clock::now();
                 if (!flow.output("estimator_out", x.size(), velocity)) {
                     trace.record(@"停止：Flow 输出含非有限值或形状错误");
                     return result(false, @"Flow 输出无效", trace);
                 }
+                double readSeconds = secondsSince(readStarted);
+                trace.record([NSString stringWithFormat:@"Flow分项：input=%.4f run=%.4f read=%.4f秒；阶段wall=%.4f，进程CPU=%.4f秒（多线程累计）；thermal=%ld",inputSeconds,runSeconds,readSeconds,secondsSince(started),processCPUSeconds()-cpuStarted,(long)NSProcessInfo.processInfo.thermalState]);
                 float delta = step == 0 ? midpoint : 1.0f - midpoint;
                 for (size_t index = 0; index < x.size(); ++index) x[index] += delta * velocity[index];
                 if (!finite(x)) return result(false, @"Flow 更新后含非有限值", trace);
@@ -648,7 +675,7 @@ bool writeWav(const std::vector<float> &samples, NSString *fileName = @"last-gen
                 for (int frame = 0; frame < audioFrames; ++frame)
                     mel[channel * audioFrames + frame] = x[channel * flowFrames + kPromptFrames + frame];
         }
-        trace.record([NSString stringWithFormat:@"%@；目标 Mel %d 帧，峰值 %.5f",resident?@"Flow保留供下一句；LLM已销毁，开始HiFT High":@"Flow 已释放", audioFrames, peak(mel)]);
+        trace.record([NSString stringWithFormat:@"%@；目标 Mel %d 帧，峰值 %.5f",resident?@"Flow保留供下一句；LLM已销毁，开始HiFT":@"Flow 已释放", audioFrames, peak(mel)]);
         if (os_proc_available_memory() < 1000000000ULL) {
             trace.record(@"安全停止：HiFT 前可用内存低于 1000 MB");
             return result(false, @"HiFT 前内存不足", trace);
@@ -721,12 +748,13 @@ bool writeWav(const std::vector<float> &samples, NSString *fileName = @"last-gen
         std::vector<float> spectral;
         {
             Graph graph(cpuThreads, optimized);
-            if (!graph.open([directory stringByAppendingPathComponent:@"hift-core.fp32.mnn"], false, trace, @"HiFT core"))
+            if (!graph.open([directory stringByAppendingPathComponent:@"hift-core.fp32.mnn"], false, trace, lowHiFT?@"HiFT core Low":@"HiFT core High", lowHiFT))
                 return result(false, @"HiFT core 会话失败", trace);
             if (!(graph.shape("mel", {1, 80, audioFrames}) &&
                   graph.shape("source_stft", {1, 18, stftFrames})))
                 return result(false, @"HiFT core 输入形状失败", trace);
             graph.net->resizeSession(graph.session); graph.releaseModel();
+            if (!sampledBudgetOK(trace)) return result(false, @"HiFT resize后当前或采样余量低于800 MB，停止", trace);
             if (!graph.inputFloat("mel", mel) || !graph.inputFloat("source_stft", stft) ||
                 !graph.run() || !graph.output("spectral", 18 * stftFrames, spectral))
                 return result(false, @"HiFT core 前向失败", trace);
@@ -763,7 +791,7 @@ bool writeWav(const std::vector<float> &samples, NSString *fileName = @"last-gen
         }
         }
         trace.record([NSString stringWithFormat:@"ISTFT DSP %.3f 秒", secondsSince(dspStarted)]);
-        if(resident&&!sampledBudgetOK(trace))return result(false,@"HiFT期间可用内存或20ms采样不足800 MB，停止常驻链路",trace);
+        if(!sampledBudgetOK(trace))return result(false,@"HiFT期间可用内存或20ms采样不足800 MB，停止链路",trace);
         if (!finite(pcm)) return result(false, @"PCM 含非有限值", trace);
         double energy = 0;
         for (float value : pcm) energy += double(value) * value;
@@ -782,6 +810,7 @@ bool writeWav(const std::vector<float> &samples, NSString *fileName = @"last-gen
         completed[@"generationSeconds"] = @(elapsed);
         completed[@"rtf"] = @(elapsed / audioSeconds);
         completed[@"residentFlow"] = @(resident!=nullptr);
+        completed[@"hiftCorePrecision"] = lowHiFT ? @"low" : @"high";
         return completed;
     }
 }

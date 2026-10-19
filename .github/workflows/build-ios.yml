@@ -25,6 +25,8 @@ jobs:
           build-tests/dsp-check
           clang++ -O2 -std=c++17 -Iios/Bridge tests/probe_metrics_check.cpp -o build-tests/probe-metrics-check
           build-tests/probe-metrics-check
+          clang++ -O2 -std=c++17 -Iios/Bridge tests/budget_check.cpp -o build-tests/budget-check
+          build-tests/budget-check
       - name: Build pinned MNN 3.6.1 for iOS
         run: |
           git clone --depth 1 --branch 3.6.1 https://github.com/alibaba/MNN.git MNN

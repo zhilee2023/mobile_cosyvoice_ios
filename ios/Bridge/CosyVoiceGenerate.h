@@ -7,6 +7,7 @@ NS_ASSUME_NONNULL_BEGIN
 @interface CosyVoiceResidentFlow : NSObject
 + (NSDictionary<NSString *, id> *)beginAtDirectory:(NSString *)directory NS_SWIFT_NAME(begin(atDirectory:));
 - (NSDictionary<NSString *, id> *)generateText:(NSString *)text;
+- (NSDictionary<NSString *, id> *)generateText:(NSString *)text lowPrecisionHiFT:(BOOL)low;
 - (NSDictionary<NSString *, id> *)close;
 @end
 
@@ -15,6 +16,7 @@ NS_ASSUME_NONNULL_BEGIN
 + (NSDictionary<NSString *, id> *)runFixedTokenSampleAtDirectory:(NSString *)directory lowPrecisionFlow:(BOOL)lowPrecision;
 + (NSDictionary<NSString *, id> *)generateText:(NSString *)text atDirectory:(NSString *)directory;
 + (NSDictionary<NSString *, id> *)generateText:(NSString *)text atDirectory:(NSString *)directory optimized:(BOOL)optimized cpuThreads:(NSInteger)threads;
++ (NSDictionary<NSString *, id> *)generateText:(NSString *)text atDirectory:(NSString *)directory optimized:(BOOL)optimized cpuThreads:(NSInteger)threads lowPrecisionHiFT:(BOOL)low;
 + (NSDictionary<NSString *, NSNumber *> *)memorySnapshot;
 + (NSDictionary<NSString *, id> *)probeHiFTPrecisionAtDirectory:(NSString *)directory;
 + (NSDictionary<NSString *, id> *)probeResidentFlowAtDirectory:(NSString *)directory;
