@@ -302,7 +302,7 @@ bool generateSpeechTokens(NSString *directory, NSString *text, const std::vector
         double loadSeconds = needsLoad ? secondsSince(started) : 0;
         if (reusable) llm->reset(); // Same model, NEW request/KV; never append sentences to old KV.
         if (metrics) { metrics[@"loadSeconds"]=@(loadSeconds); metrics[@"reused"]=@(!needsLoad); }
-        trace.record([NSString stringWithFormat:@"LLM 加载完成 %.3f 秒；%@", loadSeconds, reusable ? @"隔离复用试验：本句已reset KV" : @"本句独立实例"]);
+        trace.record([NSString stringWithFormat:@"LLM 加载完成 %.3f 秒；%@", loadSeconds, reusable ? @"复用路线：本句已reset KV（是否跨声学保留由实际调度决定）" : @"本句独立实例"]);
         std::string userContent = "You are a helpful assistant.<|endofprompt|>希望你以后能够做的比我还好呀。";
         userContent += text.UTF8String;
         std::string templated = llm->apply_chat_template(userContent);

@@ -326,7 +326,7 @@ final class SentenceStream: ObservableObject {
                 minAvailableMB = min(minAvailableMB, output["minAvailableMB"] as? Double ?? .greatestFiniteMagnitude)
                 captureDiagnostics(sentence: at + 1, result: output)
                 if let mode = output["executionMode"] as? String {
-                    record("本句实际路线：\(mode)；累计回退 \(output["fallbackCount"] ?? 0)；失败/等待/重试均已计入耗时")
+                    record("本句实际路线：\(mode)；失败/等待/重试均已计入耗时")
                     record("本句LLM已保留=\(output["llmRetainedAfterRequest"] ?? "不适用")；小批Flow复用=\(output["flowReusedWithinPair"] ?? "不适用")；LLM规划释放=\(output["llmBudgetReleases"] ?? 0)")
                 }
                 if output["hadProtectedAttempt"] as? Bool == true {
