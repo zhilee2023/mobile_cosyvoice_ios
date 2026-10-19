@@ -578,10 +578,11 @@ bool writeWav(const std::vector<float> &samples, NSString *fileName = @"last-gen
         trace.record([NSString stringWithFormat:@"HiFT配置：F0=High，core=%@；Flow精度不随HiFT变化；20ms采样/最低余量800 MB",lowHiFT?@"Low":@"High"], true);
         trace.record([NSString stringWithFormat:@"开始：%@ → Conditioner CPU High → %@ → HiFT F0 High/core %@；串行生成 WAV",
                       prepareHiFT ? @"HiFT 精度对照准备：固定74个真实speech token" :
-                      (textGeneration ? @"当前文字→手机 LLM" : @"固定 25 个 PC speech token（不运行手机文字 LLM）"), flowLabel,lowHiFT?@"Low":@"High"]);
+                      (prepared ? @"本小批已正常EOS的speech token（本次不重跑LLM）" : (textGeneration ? @"当前文字→手机 LLM" : @"固定 25 个 PC speech token（不运行手机文字 LLM）")), flowLabel,lowHiFT?@"Low":@"High"]);
         trace.record([NSString stringWithFormat:@"运行参数：%d CPU 线程；%@；模型精度和两步 Flow 不变",
                       cpuThreads, optimized ? @"优化候选（Flow 32 帧对齐、DSP 查表）" : @"v0.4.1 基线"]);
-        if(resident)trace.record(@"完整常驻入口：真实当前文字，每句重新prefill；唯一384帧Flow复用，最多105 speech token/4.2秒；LLM释放后才运行HiFT");
+        if(resident && !prepared)trace.record(@"完整常驻入口：真实当前文字，每句重新prefill；唯一384帧Flow复用，最多105 speech token/4.2秒；LLM释放后才运行HiFT");
+        if(resident && prepared)trace.record(@"两句小批声学入口：LLM已经释放；仅完整EOS token进入唯一384帧Flow；F0/HiFT逐句运行");
         if (textGeneration) {
             text = [text stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
             if (text.length == 0 || text.length > 40) {
@@ -876,7 +877,7 @@ bool writeWav(const std::vector<float> &samples, NSString *fileName = @"last-gen
         }
         const double elapsed = secondsSince(trace.start);
         trace.record([NSString stringWithFormat:@"完成：%@→%@→%.2f 秒 WAV；总耗时 %.3f 秒；RTF %.3f；RMS %.5f；PCM 峰值 %.5f；整句串行，非流式。",
-                      textGeneration ? @"当前文字→手机 LLM" : @"固定 PC speech token", flowLabel, audioSeconds,
+                      prepared ? @"本小批完整EOS token（LLM未重跑）" : (textGeneration ? @"当前文字→手机 LLM" : @"固定 PC speech token"), flowLabel, audioSeconds,
                       elapsed, elapsed / audioSeconds, rms, peak(pcm)]);
         NSMutableDictionary *completed = [result(true, [NSString stringWithFormat:@"%@生成 %.2f 秒 WAV；非流式",
                              textGeneration ? @"手机文字 LLM→Flow→HiFT 已" : @"固定 token 已", audioSeconds], trace) mutableCopy];
@@ -886,7 +887,8 @@ bool writeWav(const std::vector<float> &samples, NSString *fileName = @"last-gen
         completed[@"residentFlow"] = @(resident!=nullptr);
         completed[@"hiftCorePrecision"] = lowHiFT ? @"low" : @"high";
         completed[@"speechTokens"] = @(speech.size());
-        completed[@"eos"] = @YES;
+        completed[@"eos"] = textGeneration ? @YES : (id)NSNull.null;
+        completed[@"eosSource"] = prepared ? @"prepared-complete-LLM-output" : (textGeneration ? @"current-LLM-request" : @"fixed-prefix-fixture-not-verified");
         completed[@"llmMetrics"] = llmMetrics;
         completed[@"llmHeldForFlow"] = @(llmHeldForFlow);
         return completed;

@@ -55,7 +55,13 @@ final class SentenceStream: ObservableObject {
         try? Data().write(to: Self.logURL, options: .atomic)
         try? Data().write(to: diagnostics, options: .atomic)
         record("开始句级流水：\(plan.count) 段；\(optimized ? "32 帧对齐/DSP 优化" : "v0.4.1 基线")；CPU \(threads) 线程；播放队列目标≤2秒、硬上限4秒；至多1句待播文件；不是 token 级流式")
-        record(resident ? "自适应路线：尝试唯一Flow384；LLM前1800MB不足则释放Flow，本批改串行；每句重新prefill，无跨句KV；800MB底线不变" : "对照版：每句释放全部模型，每段最多160语音token/6.4秒")
+        if experimentMode == "llm-chain-reuse" {
+            record("LLM复用候选：每句清KV；尝试保留LLM穿过声学阶段，按规划释放；Flow逐句创建/销毁，最多160 speech token")
+        } else if experimentMode == "two-sentence-staged" {
+            record("两句分阶段候选：最多两句完整token；释放LLM后复用唯一Flow384；每句最多105 speech token，无LLM/Flow共驻")
+        } else {
+            record(resident ? "自适应路线：尝试唯一Flow384；LLM前1800MB不足则释放Flow，本批改串行；每句重新prefill，无跨句KV；800MB底线不变" : "对照版：每句释放全部模型，每段最多160语音token/6.4秒")
+        }
         record("HiFT core=\(lowHiFT ? "Low" : "High")，F0与Flow仍High；非token级流式")
         if let experimentMode { record("新整链路线：\(experimentMode)；先短文验收，不保证RTF降低/分钟级内存稳定；两句路线首句可能更晚") }
         task = Task { await run(plan: plan, directory: directory, optimized: optimized, threads: threads, player: player, resident: resident, lowHiFT: lowHiFT, experimentMode: experimentMode) }

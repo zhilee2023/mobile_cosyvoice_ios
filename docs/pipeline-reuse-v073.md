@@ -69,6 +69,8 @@ Trace仍保留关键落盘记录；此版未混入日志缓冲等额外变量。
   比较fresh / LLM保留穿过声学 / 两句分阶段三种生命周期；检查speech token完全
   一致、正常EOS、Mel/PCM相对L2<1e-3，另强制两个token无EOS后销毁并恢复。
   Windows无法验证iPhone原生FP16、ARC、可用内存或播放性能。
+  本轮已实际通过：三句分别20/42/27 speech token；三种生命周期均EOS且逐token
+  相同，九段受控Mel/PCM相对参考L2均为0，强制无EOS销毁两次后可恢复生成。
 - Phone：分别冷启动后，先默认三句LLM复用，再默认三句两句分阶段；只分享一个
   `cosyvoice-test-report.json`。看真实复用次数、完整EOS、声音、RTF、首入队、
   断供、峰值/最低余量与清理。随机采样时长可能不同，不能拿一次RTF差当严格A/B。
