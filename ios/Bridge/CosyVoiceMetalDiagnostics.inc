@@ -45,7 +45,7 @@ NSDictionary *metalTensorStats(MNN::Tensor *tensor) {
 NSDictionary *diagnoseMetalNaN(Graph &flow, Trace &trace) {
     auto start = std::chrono::steady_clock::now();
     NSMutableDictionary *diagnostic = [@{@"diagnosticOnly": @YES, @"timingIsBenchmark": @NO,
-        @"foundNonFinite": @NO, @"completed": @NO} mutableCopy];
+        @"foundNonFinite": @NO, @"foundNaN": @NO, @"foundInf": @NO, @"completed": @NO} mutableCopy];
     NSMutableArray *recent = [NSMutableArray array];
     __strong NSArray *inputsBefore = @[];
     size_t visited = 0, inspected = 0, skipped = 0;
@@ -73,14 +73,18 @@ NSDictionary *diagnoseMetalNaN(Graph &flow, Trace &trace) {
         NSDictionary *op = @{@"index": @(visited), @"name": name, @"type": type,
                               @"inputsBefore": inputsBefore, @"outputsAfter": outputs};
         [recent addObject:op]; if (recent.count > 8) [recent removeObjectAtIndex:0];
-        bool inputBad = false, outputBad = false, copyFailed = false;
-        for (NSDictionary *item in inputsBefore) { inputBad |= [item[@"invalid"] unsignedLongLongValue] != 0; copyFailed |= [item[@"status"] isEqual:@"copy-failed"]; }
-        for (NSDictionary *item in outputs) { outputBad |= [item[@"invalid"] unsignedLongLongValue] != 0; copyFailed |= [item[@"status"] isEqual:@"copy-failed"]; }
-        if (inputBad || outputBad) {
-            diagnostic[@"foundNonFinite"] = @YES; diagnostic[@"completed"] = @YES;
-            diagnostic[@"firstObservedOp"] = op; diagnostic[@"inputsAlreadyNonFinite"] = @(inputBad);
-            diagnostic[@"stopReason"] = @"first-observed-nonfinite";
-            trace.record([NSString stringWithFormat:@"首个观测到非有限值：第%zu个算子 %@ / %@；输入已有异常=%@；停止后续算子", visited, name, type, inputBad ? @"是" : @"否"]);
+        bool inputNaN = false, outputNaN = false, hasInf = false, copyFailed = false;
+        for (NSDictionary *item in inputsBefore) { inputNaN |= [item[@"nanCount"] unsignedLongLongValue] != 0; hasInf |= [item[@"infCount"] unsignedLongLongValue] != 0; copyFailed |= [item[@"status"] isEqual:@"copy-failed"]; }
+        for (NSDictionary *item in outputs) { outputNaN |= [item[@"nanCount"] unsignedLongLongValue] != 0; hasInf |= [item[@"infCount"] unsignedLongLongValue] != 0; copyFailed |= [item[@"status"] isEqual:@"copy-failed"]; }
+        if (hasInf && ![diagnostic[@"foundInf"] boolValue]) {
+            diagnostic[@"foundInf"] = @YES; diagnostic[@"foundNonFinite"] = @YES; diagnostic[@"firstObservedInfOp"] = op;
+            trace.record([NSString stringWithFormat:@"首次观测Inf：第%zu个算子 %@ / %@；继续查NaN边界", visited, name, type]);
+        }
+        if (inputNaN || outputNaN) {
+            diagnostic[@"foundNonFinite"] = @YES; diagnostic[@"foundNaN"] = @YES; diagnostic[@"completed"] = @YES;
+            diagnostic[@"firstObservedOp"] = op; diagnostic[@"inputsAlreadyNaN"] = @(inputNaN);
+            diagnostic[@"stopReason"] = @"first-observed-nan";
+            trace.record([NSString stringWithFormat:@"首个观测到NaN：第%zu个算子 %@ / %@；输入已有NaN=%@；停止后续算子", visited, name, type, inputNaN ? @"是" : @"否"]);
             return false;
         }
         if (copyFailed) { diagnostic[@"stopReason"] = @"tensor-copy-failed"; return false; }
@@ -94,7 +98,7 @@ NSDictionary *diagnoseMetalNaN(Graph &flow, Trace &trace) {
     diagnostic[@"inspectedFloatTensors"] = @(inspected); diagnostic[@"skippedTensors"] = @(skipped);
     diagnostic[@"recentOps"] = recent; diagnostic[@"diagnosticWallSeconds"] = @(secondsSince(start));
     if (code == MNN::NO_ERROR && visited && !diagnostic[@"stopReason"]) {
-        diagnostic[@"completed"] = @YES; diagnostic[@"stopReason"] = @"full-first-step-no-observed-nonfinite";
+        diagnostic[@"completed"] = @YES; diagnostic[@"stopReason"] = @"full-first-step-no-observed-nan";
     } else if (!diagnostic[@"stopReason"]) diagnostic[@"stopReason"] = visited ? @"runtime-error" : @"callbacks-not-observed";
     trace.record([NSString stringWithFormat:@"逐算子诊断返回：%@；算子%zu；读取%zu，跳过%zu；code=%d", diagnostic[@"stopReason"], visited, inspected, skipped, int(code)]);
     return diagnostic;
