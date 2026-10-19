@@ -4,7 +4,9 @@
 #import <os/proc.h>
 
 #include <algorithm>
+#include <atomic>
 #include <chrono>
+#include <cstdint>
 #include <limits>
 #include <memory>
 #include <thread>
@@ -51,6 +53,31 @@ struct ProbeStats {
     std::chrono::steady_clock::time_point started = std::chrono::steady_clock::now();
     double peakFootprintMB = 0;
     double minAvailableMB = std::numeric_limits<double>::infinity();
+    std::atomic<bool> sampling{true};
+    std::atomic<uint64_t> sampledPeak{0};
+    std::atomic<uint64_t> sampledMinimum{UINT64_MAX};
+    std::thread worker;
+    ProbeStats() : worker([this] {
+        while (sampling.load()) {
+            sample();
+            std::this_thread::sleep_for(std::chrono::milliseconds(20));
+        }
+    }) { sample(); }
+    ~ProbeStats() { stop(); }
+    void sample() {
+        uint64_t peak = footprintBytes(), available = os_proc_available_memory();
+        uint64_t old = sampledPeak.load();
+        while (old < peak && !sampledPeak.compare_exchange_weak(old, peak)) {}
+        old = sampledMinimum.load();
+        while (old > available && !sampledMinimum.compare_exchange_weak(old, available)) {}
+    }
+    void stop() {
+        sample();
+        sampling = false;
+        if (worker.joinable()) worker.join();
+        peakFootprintMB = std::max(peakFootprintMB, sampledPeak.load() / 1000000.0);
+        minAvailableMB = std::min(minAvailableMB, sampledMinimum.load() / 1000000.0);
+    }
 };
 
 void checkpoint(ProbeStats &stats, NSString *stage, bool fresh = false) {
@@ -62,7 +89,12 @@ void checkpoint(ProbeStats &stats, NSString *stage, bool fresh = false) {
                     elapsedSeconds(stats.started), stage, footprint, available], fresh);
 }
 
-NSDictionary<NSString *, id> *probeResult(bool success, NSString *message, const ProbeStats &stats) {
+NSDictionary<NSString *, id> *probeResult(bool success, NSString *message, ProbeStats &stats) {
+    stats.stop();
+    if (success && stats.minAvailableMB < 800.0) {
+        success = false;
+        message = @"20ms采样最低可用内存低于800 MB；GPU路线未通过，不允许前向";
+    }
     return @{ @"success": @(success), @"message": message,
               @"peakFootprintMB": @(stats.peakFootprintMB),
               @"minAvailableMB": @(stats.minAvailableMB),
@@ -130,6 +162,11 @@ NSDictionary<NSString *, id> *probeLargeSession(NSString *directory, ProbeMode m
             return probeResult(false, @"MNN 会话创建失败；详见内存日志", stats);
         }
         checkpoint(stats, [@"会话已创建；开始设置真实测试形状：" stringByAppendingString:label]);
+        if (metal && os_proc_available_memory() < 1000000000ULL) {
+            checkpoint(stats, @"停止：Metal会话创建后不足1000 MB，未执行resize或前向");
+            interpreter->releaseSession(session);
+            return probeResult(false, @"Metal会话创建后余量不足，未执行resize", stats);
+        }
 
         bool shapesOK = flow
             ? setInputShape(interpreter.get(), session, "x", {1, 80, 256})
@@ -143,6 +180,13 @@ NSDictionary<NSString *, id> *probeLargeSession(NSString *directory, ProbeMode m
         if (shapesOK) {
             interpreter->resizeSession(session);
             checkpoint(stats, flow ? @"Flow 256 帧 resize 完成" : @"HiFT 160 帧 resize 完成");
+            if (metal && (os_proc_available_memory() < 800000000ULL || stats.sampledMinimum.load() < 800000000ULL)) {
+                checkpoint(stats, @"停止：Metal resize 后余量低于800 MB；不执行前向");
+                interpreter->releaseSession(session);
+                interpreter.reset();
+                checkpoint(stats, @"低余量会话已释放");
+                return probeResult(false, @"Metal 256帧 resize 未通过800 MB内存门槛", stats);
+            }
         } else {
             checkpoint(stats, @"输入名称不匹配，跳过 resize");
         }
@@ -154,7 +198,7 @@ NSDictionary<NSString *, id> *probeLargeSession(NSString *directory, ProbeMode m
         std::this_thread::sleep_for(std::chrono::milliseconds(500));
         checkpoint(stats, @"释放后 0.5 秒");
         if (!shapesOK) return probeResult(false, @"模型输入名称不匹配；未执行前向", stats);
-        return probeResult(true, @"仅完成会话创建和 resize；未执行模型前向，不代表推理峰值", stats);
+        return probeResult(true, @"256帧会话与resize通过800 MB门槛；未执行模型前向，不代表GPU整链可行", stats);
     }
 }
 }
