@@ -22,7 +22,7 @@ struct PipelineLlmOwner : LlmOwner {
     @autoreleasepool {
         Trace trace(@"last-pipeline-lifecycle.log"); MemorySampler sampler; trace.sampler=&sampler;
         trace.record([NSString stringWithFormat:@"新整链对照 %@；4线程/Flow High两步/20ms采样；未获长文验收",mode],true);
-        if (![@[@"llm-chain-reuse",@"two-sentence-staged"] containsObject:mode])
+        if (![@[@"llm-chain-reuse",@"two-sentence-staged",@"three-sentence-staged"] containsObject:mode])
             return result(false,@"未知完整链路实验",trace);
         if (!waitAvailable(2900000000ULL,trace,@"对照启动前")) return result(false,@"初始余量不足；未加载候选模型",trace);
         CosyVoicePipeline *owner=[CosyVoicePipeline new];
@@ -55,11 +55,13 @@ struct PipelineLlmOwner : LlmOwner {
     std::lock_guard<std::mutex> guard(_lock);
     @autoreleasepool {
         Trace trace(@"last-generation.log"); MemorySampler sampler; trace.sampler=&sampler;
-        trace.record(@"两句分阶段：先同一LLM逐句reset KV生成完整EOS token，再释放LLM；此阶段不加载Flow/HiFT",true);
+        const BOOL three=[_mode isEqual:@"three-sentence-staged"];
+        const NSUInteger batchLimit=three?3:2;
+        trace.record([NSString stringWithFormat:@"最多%lu句分阶段：同一LLM逐句reset KV生成完整EOS token，再释放LLM；此阶段不加载Flow/HiFT",(unsigned long)batchLimit],true);
         if(_at<_prepared.size())return result(false,@"小批仍有未消费句段，不能覆盖token队列",trace);
         _flow.reset(); _llm.reset(); _prepared.clear(); _texts=nil; _at=0;
-        if (_closed || ![_mode isEqual:@"two-sentence-staged"] || texts.count<1 || texts.count>2)
-            return result(false,@"只允许本批1–2个完整句段",trace);
+        if (_closed || (!three && ![_mode isEqual:@"two-sentence-staged"]) || texts.count<1 || texts.count>batchLimit)
+            return result(false,[NSString stringWithFormat:@"只允许本批1–%lu个完整句段",(unsigned long)batchLimit],trace);
         for(id text in texts) if(![text isKindOfClass:NSString.class] || [text length]<1 || [text length]>40)
             return result(false,@"句段长度或类型无效",trace);
         std::vector<int> prompt;
@@ -80,9 +82,9 @@ struct PipelineLlmOwner : LlmOwner {
             _prepared.push_back(std::move(speech));
         }
         _texts=[texts copy]; _llm.reset();
-        trace.record(@"本批完整token已就绪；LLM已销毁；尚未创建Flow；token队列最多两句");
+        trace.record([NSString stringWithFormat:@"本批完整token已就绪；LLM已销毁；尚未创建Flow；token队列最多%lu句",(unsigned long)batchLimit]);
         if(!waitAvailable(2500000000ULL,trace,@"分阶段释放LLM后")) { _prepared.clear(); _texts=nil; return result(false,@"LLM释放后余量未恢复",trace); }
-        NSMutableDictionary *out=[result(true,@"本批1–2句完整EOS token已就绪；无活跃LLM/KV",trace) mutableCopy];
+        NSMutableDictionary *out=[result(true,[NSString stringWithFormat:@"本批1–%lu句完整EOS token已就绪；无活跃LLM/KV",(unsigned long)batchLimit],trace) mutableCopy];
         out[@"preparedCount"]=@(_prepared.size()); out[@"executionMode"]=_mode;
         Trace life(@"last-pipeline-lifecycle.log");life.record([NSString stringWithFormat:@"已准备%zu句完整token；LLM已释放，Flow尚未加载；累计LLM请求%lu/复用%lu",_prepared.size(),(unsigned long)_requests,(unsigned long)_reusedRequests]);
         return out;
@@ -93,8 +95,8 @@ struct PipelineLlmOwner : LlmOwner {
     std::lock_guard<std::mutex> guard(_lock);
     @autoreleasepool {
         Trace trace(@"last-generation.log");MemorySampler sampler;trace.sampler=&sampler;
-        trace.record(@"两句分阶段声学：LLM已释放；本小批唯一Flow384，HiFT逐句运行",true);
-        if(_closed || ![_mode isEqual:@"two-sentence-staged"] || _at>=_prepared.size() || _llm)
+        trace.record(@"分阶段声学：LLM已释放；本小批唯一Flow384，HiFT逐句运行",true);
+        if(_closed || (![_mode isEqual:@"two-sentence-staged"] && ![_mode isEqual:@"three-sentence-staged"]) || _at>=_prepared.size() || _llm)
             return result(false,@"没有已准备的完整句段或错误的模型共驻状态",trace);
         bool reused=bool(_flow);
         if(!_flow) {
@@ -128,6 +130,7 @@ struct PipelineLlmOwner : LlmOwner {
         out[@"minAvailableMB"]=@(std::min(trace.minAvailableMB,[out[@"minAvailableMB"] doubleValue]));
         if(!sampledBudgetOK(trace)) {out[@"success"]=@NO;out[@"failureKind"]=@"memory";out[@"message"]=@"整次声学调用含低于800 MB的采样，不计成功";}
         out[@"executionMode"]=_mode;out[@"flowReusedWithinPair"]=@(reused);
+        out[@"flowReusedWithinBatch"]=@(reused);out[@"batchSize"]=@(_prepared.size());
         out[@"flowCreateCount"]=@(_flowCreates);out[@"flowReuseCount"]=@(_flowReuses);
         ++_at;
         bool done=![out[@"success"] boolValue] || _at>=_prepared.size();

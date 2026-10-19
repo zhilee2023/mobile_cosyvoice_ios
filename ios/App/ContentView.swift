@@ -82,9 +82,9 @@ struct ContentView: View {
                         Text(route.title)
                         Text(route.conclusion).font(.caption).foregroundStyle(.secondary)
                     }
-                    Text("先验证完整EOS＋HiFT时的真实共驻内存，再做长文；20ms采样最低余量800 MB不降低。若共驻不够，改有限句段分阶段调度，不堆多套模型。")
+                    Text("三句对照使用完整EOS、Flow High两步与HiFT Low；20ms采样最低余量800 MB不降低。首句要等三句token生成后才能入队。")
                         .font(.caption).foregroundStyle(.secondary)
-                    Text("请分别冷启动，保持默认文本、HiFT Low和4线程，各跑一条路线，再分享一个统一报告。比较初始化/失败/释放均计入的RTF、首块入队、断供、最低余量和真实复用次数；暂不宣称更快。仍是句级播放，不是token级流式。")
+                    Text("请冷启动、保持默认三句文本与4线程，运行本对照两次，再分享一个统一报告。比较初始化/失败/释放均计入的RTF、首块入队、断供、最低余量及Flow创建次数。历史两句结果仅供参考；仍是句级播放。")
                         .font(.caption).foregroundStyle(.secondary)
                 }
                 Section("统一测试报告 · 只发这一个") {

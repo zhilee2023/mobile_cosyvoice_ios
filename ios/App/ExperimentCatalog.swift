@@ -31,10 +31,12 @@ enum ExperimentCatalog {
               conclusion: "重复在第一步出现NaN；不采用，不重复同一整图测试。"),
         .init(id: "adaptive-resident", title: "Flow384自适应常驻", state: .archived,
               conclusion: "现有整链经常首句前就释放Flow回退，额外初始化未换来收益。"),
-        .init(id: "llm-chain-reuse", title: "对照① 整链 LLM 复用", state: .available,
-              conclusion: "每句清KV并重新prefill；声学阶段顺序运行。余量不足会释放LLM，报告记录真实复用次数。", execution: .sentence),
-        .init(id: "two-sentence-staged", title: "对照② 两句分阶段／唯一 Flow", state: .available,
-              conclusion: "先生成最多两句完整token，再释放LLM；小批内复用唯一Flow384，逐句出声。首句可能更晚。", execution: .sentence)
+        .init(id: "llm-chain-reuse", title: "整链 LLM 复用", state: .archived,
+              conclusion: "v0.7.3真机三句完成，计算RTF 1.756；峰值2159 MB、首块入队5.48秒，未证明比串行更快。", execution: .sentence),
+        .init(id: "two-sentence-staged", title: "两句分阶段／唯一 Flow", state: .archived,
+              conclusion: "v0.7.3真机两次完成，计算RTF 1.744/1.668，峰值约1.61 GB；每三句仍创建两次Flow，首块约6.5秒。", execution: .sentence),
+        .init(id: "three-sentence-staged", title: "三句分阶段／唯一 Flow（新对照）", state: .available,
+              conclusion: "最多三句完整EOS token后释放LLM；共用一次Flow384逐句生成。重点测总耗时、首块等待和最低内存。", execution: .sentence)
     ]
     static var available: [Route] { routes.filter { $0.state == .available } }
     static var archived: [Route] { routes.filter { $0.state == .archived } }

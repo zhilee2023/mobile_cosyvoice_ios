@@ -48,7 +48,7 @@ final class SentenceStream: ObservableObject {
         audioSeconds = 0; computeSeconds = 0; startupSeconds = 0; generatedCount = 0; plannedCount = plan.count
         firstQueuedSeconds = nil; peakMB = 0; minAvailableMB = .greatestFiniteMagnitude
         started = ProcessInfo.processInfo.systemUptime
-        let routeLabel = experimentMode == "llm-chain-reuse" ? "整链LLM复用/按需释放" : (experimentMode == "two-sentence-staged" ? "两句分阶段/唯一Flow复用" : (resident ? "自适应常驻/串行回退" : "串行基线"))
+        let routeLabel = experimentMode == "llm-chain-reuse" ? "整链LLM复用/按需释放" : (experimentMode == "two-sentence-staged" ? "两句分阶段/唯一Flow复用" : (experimentMode == "three-sentence-staged" ? "三句分阶段/唯一Flow复用" : (resident ? "自适应常驻/串行回退" : "串行基线")))
         reportID = DiagnosticReport.begin(kind: "sentence-generation", label: routeLabel,
             parameters: ["text": text, "optimized": optimized, "threads": threads, "hiFTLow": lowHiFT,
                          "adaptive": resident, "pipelineMode": experimentMode ?? "serial", "initialSegments": plan.count], sources: DiagnosticReport.sentenceSources)
@@ -57,13 +57,14 @@ final class SentenceStream: ObservableObject {
         record("开始句级流水：\(plan.count) 段；\(optimized ? "32 帧对齐/DSP 优化" : "v0.4.1 基线")；CPU \(threads) 线程；播放队列目标≤2秒、硬上限4秒；至多1句待播文件；不是 token 级流式")
         if experimentMode == "llm-chain-reuse" {
             record("LLM复用候选：每句清KV；尝试保留LLM穿过声学阶段，按规划释放；Flow逐句创建/销毁，最多160 speech token")
-        } else if experimentMode == "two-sentence-staged" {
-            record("两句分阶段候选：最多两句完整token；释放LLM后复用唯一Flow384；每句最多105 speech token，无LLM/Flow共驻")
+        } else if experimentMode == "two-sentence-staged" || experimentMode == "three-sentence-staged" {
+            let batchLimit = experimentMode == "three-sentence-staged" ? 3 : 2
+            record("\(batchLimit)句分阶段候选：最多\(batchLimit)句完整token；释放LLM后复用唯一Flow384；每句最多105 speech token，无LLM/Flow共驻")
         } else {
             record(resident ? "自适应路线：尝试唯一Flow384；LLM前1800MB不足则释放Flow，本批改串行；每句重新prefill，无跨句KV；800MB底线不变" : "对照版：每句释放全部模型，每段最多160语音token/6.4秒")
         }
         record("HiFT core=\(lowHiFT ? "Low" : "High")，F0与Flow仍High；非token级流式")
-        if let experimentMode { record("新整链路线：\(experimentMode)；先短文验收，不保证RTF降低/分钟级内存稳定；两句路线首句可能更晚") }
+        if let experimentMode { record("新整链路线：\(experimentMode)；先短文验收，不保证RTF降低/分钟级内存稳定；分阶段路线首句可能更晚") }
         task = Task { await run(plan: plan, directory: directory, optimized: optimized, threads: threads, player: player, resident: resident, lowHiFT: lowHiFT, experimentMode: experimentMode) }
     }
 
@@ -122,7 +123,7 @@ final class SentenceStream: ObservableObject {
             worker.async { continuation.resume(returning: CosyVoicePipeline.begin(atDirectory: directory, mode: mode)) }
         }
     }
-    private func preparePair(_ texts: [String], pipeline: CosyVoicePipeline) async -> [String: Any] {
+    private func prepareBatch(_ texts: [String], pipeline: CosyVoicePipeline) async -> [String: Any] {
         await withCheckedContinuation { continuation in
             worker.async { continuation.resume(returning: pipeline.prepareTexts(texts)) }
         }
@@ -223,8 +224,9 @@ final class SentenceStream: ObservableObject {
         var lifecycleResult: [String: Any] = [:]
         var attempts: [[String: Any]] = []
         var generationWallSeconds: Double?
-        var pairRemaining = 0
-        let staged = experimentMode == "two-sentence-staged"
+        var batchRemaining = 0
+        let stagedBatchLimit = experimentMode == "three-sentence-staged" ? 3 : (experimentMode == "two-sentence-staged" ? 2 : 0)
+        let staged = stagedBatchLimit > 0
         var completedPlayback = false
         // Only these two app-owned scratch files can be replaced/removed here.
         let slots = (0...1).map { Self.documents.appendingPathComponent("sentence-stream-slot-\($0).wav") }
@@ -285,13 +287,13 @@ final class SentenceStream: ObservableObject {
             while at < pending.count {
                 try Task.checkCancellation()
                 if !resident && pipelineSession == nil { try await memoryGate() }
-                if staged, pairRemaining == 0, let pipelineSession {
-                    let pair = Array(pending[at..<min(pending.count,at+2)].map(\.text))
+                if staged, batchRemaining == 0, let pipelineSession {
+                    let batch = Array(pending[at..<min(pending.count,at+stagedBatchLimit)].map(\.text))
                     let prepareBegin = ProcessInfo.processInfo.systemUptime
-                    let prepared = await preparePair(pair, pipeline: pipelineSession)
+                    let prepared = await prepareBatch(batch, pipeline: pipelineSession)
                     let prepareElapsed = ProcessInfo.processInfo.systemUptime - prepareBegin
                     computeSeconds += prepareElapsed
-                    attempts.append(["phase": "prepare-pair", "firstSegment": at+1, "seconds": prepareElapsed, "result": prepared])
+                    attempts.append(["phase": "prepare-batch", "firstSegment": at+1, "batchSize": batch.count, "seconds": prepareElapsed, "result": prepared])
                     peakMB = max(peakMB, prepared["peakFootprintMB"] as? Double ?? 0)
                     minAvailableMB = min(minAvailableMB, prepared["minAvailableMB"] as? Double ?? .greatestFiniteMagnitude)
                     captureDiagnostics(sentence: at+1, result: prepared)
@@ -299,21 +301,21 @@ final class SentenceStream: ObservableObject {
                     if prepared["success"] as? Bool != true {
                         let offset = prepared["failedTextIndex"] as? Int ?? 0
                         let index = at + offset
-                        if prepared["retrySplit"] as? Bool == true, offset >= 0, offset < pair.count,
+                        if prepared["retrySplit"] as? Bool == true, offset >= 0, offset < batch.count,
                            pending[index].depth < 3, pending[index].text.count > 1 {
                             let item = pending[index]
                             let pieces = try SentencePlanner.partition(item.text, limit: max(1,item.text.utf16.count/2))
                             guard pieces.count > 1, pending.count + pieces.count - 1 <= 128 else { throw SentenceStreamError.failed("句段不能继续拆分") }
                             pending.replaceSubrange(index...index, with: pieces.map { (text: $0, depth: item.depth+1) })
                             plannedCount = pending.count
-                            record("两句准备阶段超限；未播出此批，有限拆句后重新准备；失败及重算均计入RTF")
+                            record("分阶段准备超限；未播出此批，有限拆句后重新准备；失败及重算均计入RTF")
                             continue
                         }
-                        throw SentenceStreamError.failed(prepared["message"] as? String ?? "两句token准备失败")
+                        throw SentenceStreamError.failed(prepared["message"] as? String ?? "批量token准备失败")
                     }
-                    pairRemaining = prepared["preparedCount"] as? Int ?? 0
-                    guard pairRemaining == pair.count else { throw SentenceStreamError.failed("预生成token队列数量错误") }
-                    record("已准备\(pairRemaining)句完整EOS token，LLM已释放；开始唯一Flow声学阶段")
+                    batchRemaining = prepared["preparedCount"] as? Int ?? 0
+                    guard batchRemaining == batch.count else { throw SentenceStreamError.failed("预生成token队列数量错误") }
+                    record("已准备\(batchRemaining)句完整EOS token，LLM已释放；开始唯一Flow声学阶段")
                 }
                 status = "生成第 \(at + 1)/\(pending.count) 段；已生成 \(String(format: "%.2f", audioSeconds)) 秒，上一句可同时播放。"
                 record("句 \(at + 1)/\(pending.count) 开始，\(pending[at].text.utf16.count) UTF-16 单元")
@@ -327,13 +329,14 @@ final class SentenceStream: ObservableObject {
                 captureDiagnostics(sentence: at + 1, result: output)
                 if let mode = output["executionMode"] as? String {
                     record("本句实际路线：\(mode)；失败/等待/重试均已计入耗时")
-                    record("本句LLM已保留=\(output["llmRetainedAfterRequest"] ?? "不适用")；小批Flow复用=\(output["flowReusedWithinPair"] ?? "不适用")；LLM规划释放=\(output["llmBudgetReleases"] ?? 0)")
+                    record("本句LLM已保留=\(output["llmRetainedAfterRequest"] ?? "不适用")；小批Flow复用=\(output["flowReusedWithinBatch"] ?? output["flowReusedWithinPair"] ?? "不适用")；LLM规划释放=\(output["llmBudgetReleases"] ?? 0)")
                 }
                 if output["hadProtectedAttempt"] as? Bool == true {
                     record("本句曾触发内存保护后回退；即使重试生成成功，也不算全程内存门槛通过；最低余量未清零")
                 }
                 try Task.checkCancellation()
                 if output["success"] as? Bool != true {
+                    if staged { batchRemaining = 0 } // Native drops the remaining prepared queue on failure.
                     if output["retrySplit"] as? Bool == true, pending[at].depth < 3, pending[at].text.count > 1 {
                         let item = pending[at]
                         let pieces = try SentencePlanner.partition(item.text, limit: max(1, item.text.utf16.count / 2))
@@ -361,7 +364,7 @@ final class SentenceStream: ObservableObject {
                 try Task.checkCancellation()
                 playbackTask = Task { try await self.feed(slot, player: player) }
                 at += 1
-                if staged { pairRemaining -= 1 }
+                if staged { batchRemaining -= 1 }
             }
             if let session = pipelineSession {
                 lifecycleResult = await closePipeline(session)

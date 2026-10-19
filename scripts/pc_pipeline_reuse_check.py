@@ -1,7 +1,7 @@
 """v0.7.3 lifecycle numerics. Windows CPU only; NOT phone RAM/RTF validation.
 
 Controlled 384-frame inputs, penalty+greedy sampling, exact speech/EOS checks.
-Fresh baseline vs retained LLM through acoustics vs two-request stage batching.
+Fresh baseline vs retained LLM through acoustics vs two/three-request stage batching.
 All routes use the same two-step Flow and selected HiFT Low.
 """
 from __future__ import annotations
@@ -101,6 +101,11 @@ def main():
         f=FlowSession()
         for offset,speech in enumerate(batch):acoustic("two-staged",start+offset,speech,f)
         del f;gc.collect()
+    llm=load();batch=[tokens(llm,t) for t in TEXTS]
+    del llm;gc.collect()
+    f=FlowSession()
+    for index,speech in enumerate(batch):acoustic("three-staged",index,speech,f)
+    del f;gc.collect()
     report=dict(passed=True,scope="Windows MNN lifecycle/numerics only; not native iPhone ARC/RAM/RTF or listening approval",
                 forced_no_eos_destructions=2,rows=rows,flow_frames=384,steps=2,hift="low",sampling="penalty+greedy")
     (OUT / "report.json").write_text(json.dumps(report,indent=2)+"\n")
