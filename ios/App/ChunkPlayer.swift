@@ -83,7 +83,7 @@ final class ChunkPlayer: ObservableObject {
         status = "分块播放中"
     }
 
-    func stop() {
+    func stop(resetMetrics: Bool = true) {
         epoch = UUID() // Ignore completion callbacks from a stopped old run.
         node.stop()
         engine.stop()
@@ -91,8 +91,7 @@ final class ChunkPlayer: ObservableObject {
         queuedSeconds = 0
         hasScheduled = false
         drainedAt = nil
-        gapCount = 0
-        gapSeconds = 0
+        if resetMetrics { gapCount = 0; gapSeconds = 0 }
         status = "已停止"
     }
 }

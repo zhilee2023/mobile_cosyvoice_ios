@@ -33,6 +33,8 @@ struct SentencePlannerChecks {
         precondition(resident.count == 3) // Identical default 3-sentence fixture across both new routes.
         let singleButtonPlan = try SentencePlanner.plan(residentText, limit: 40)
         precondition(singleButtonPlan.count == 3)
+        let five = try SentencePlanner.plan(LongTextBenchmarks.fiveSentenceText, limit: 18)
+        precondition(five.count == 5 && five.joined() == LongTextBenchmarks.fiveSentenceText)
         for (passages, count) in [(1, 12), (2, 24)] {
             let text = LongTextBenchmarks.text(passages: passages)
             let plan = try SentencePlanner.plan(text, limit: 18)

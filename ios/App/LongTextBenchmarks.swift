@@ -1,6 +1,7 @@
 import Foundation
 
 enum LongTextBenchmarks {
+    static var fiveSentenceText: String { sentences.prefix(5).joined() }
     // Twelve different sentences, each within the EXISTING 18-UTF16 planner
     // limit. Double the passage for the long run; duration is measured, not set.
     static let sentences = [

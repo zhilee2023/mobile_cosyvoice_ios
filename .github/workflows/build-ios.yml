@@ -21,6 +21,8 @@ jobs:
           mkdir -p build-tests
           swiftc ios/App/SentencePlanner.swift ios/App/LongTextBenchmarks.swift tests/SentencePlannerChecks.swift -o build-tests/sentence-check
           build-tests/sentence-check
+          swiftc ios/App/PlaybackPlan.swift tests/PlaybackPlanChecks.swift -o build-tests/playback-check
+          build-tests/playback-check
           swiftc ios/App/TestReportArchive.swift tests/TestReportArchiveChecks.swift -o build-tests/report-check
           build-tests/report-check
           swiftc ios/App/ExperimentCatalog.swift tests/ExperimentCatalogChecks.swift -o build-tests/catalog-check

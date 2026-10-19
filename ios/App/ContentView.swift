@@ -6,9 +6,10 @@ struct ContentView: View {
     @StateObject private var player = ChunkPlayer()
     @StateObject private var sentences = SentenceStream()
     @StateObject private var experiments = ExperimentRunner()
-    @State private var text = "你好，欢迎来到离线语音测试。我们正在测试按句生成和播放。希望每一句都清晰自然。"
+    @State private var text = LongTextBenchmarks.fiveSentenceText
     private let threads = ExperimentCatalog.defaultThreads
     @State private var lowHiFT = true
+    @State private var playbackMode: PlaybackMode = .buffered
     @State private var singleRunning = false
     @State private var generationResult = "尚未生成"
     @State private var wavPlayer: AVAudioPlayer?
@@ -27,7 +28,7 @@ struct ContentView: View {
                     Label("CosyVoice · MNN · iPhone", systemImage: "iphone")
                     Text("v\(Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "未知") · build \(Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "未知")")
                         .font(.caption).foregroundStyle(.secondary)
-                    Text("按句生成、首句完成即播放。每句仍先生成 token 再解码，不是句内 token 级流式。")
+                    Text("五句短测试，可先预加载三句再播，或全部生成后连续播放；不是句内 token 级流式。")
                         .font(.caption).foregroundStyle(.secondary)
                 }
                 Section("模型") {
@@ -40,11 +41,11 @@ struct ContentView: View {
                 }
                 Section("输入与生成") {
                     TextEditor(text: $text).frame(minHeight: 110).disabled(busy)
-                    HStack {
-                        Button("载入12句 · 约30秒") { text = LongTextBenchmarks.text(passages: 1) }
-                        Button("载入24句 · 约60秒") { text = LongTextBenchmarks.text(passages: 2) }
+                    Button("载入五句测试文本") { text = LongTextBenchmarks.fiveSentenceText }.disabled(busy)
+                    Picker("播放方式", selection: $playbackMode) {
+                        ForEach(PlaybackMode.allCases) { mode in Text(mode.title).tag(mode) }
                     }.disabled(busy)
-                    Text("预估时长不是目标时长，实际由LLM正常EOS决定。用相同文本分别测三句/六句批量；预置文本会替换当前输入。")
+                    Text("本轮只测五句。预加载三句会延后首播，边播边生成后两句；全部生成后播放则不受后续推理供给影响。生成RTF不会因此自动下降。")
                         .font(.caption).foregroundStyle(.secondary)
                     Text("长文≤2000 UTF-16单元；自动拆句，不截断冒充读完。单句按钮≤40单元。")
                         .font(.caption).foregroundStyle(.secondary)
@@ -53,7 +54,7 @@ struct ContentView: View {
                         .font(.caption).foregroundStyle(.secondary)
                     Text("当前配置：LLM / Flow / HiFT 均4线程；Flow CPU High两步，F0 High。")
                         .font(.caption).foregroundStyle(.secondary)
-                    Button("按句生成与播放") { startSentences() }
+                    Button("开始生成与播放") { startSentences() }
                         .disabled(!models.ready || busy || text.isEmpty)
                     Button("只生成当前短句 WAV") { generateSingle() }
                         .disabled(!models.ready || busy || !isSingleSentence)
@@ -61,9 +62,10 @@ struct ContentView: View {
                         .font(.caption).foregroundStyle(.secondary)
                     Button("停止句级生成") { sentences.stop() }.disabled(!sentences.isRunning)
                     Text(sentences.status).font(.caption).textSelection(.enabled)
+                    Text(sentences.playbackStatus).font(.caption).foregroundStyle(.secondary)
                     Text("已生成 \(sentences.audioSeconds, specifier: "%.2f") 秒 · 播放队列 \(player.queuedSeconds, specifier: "%.2f") 秒 · 断供观测 \(player.gapCount) 次")
                         .font(.caption)
-                    Text("队列目标≤2秒、硬上限4秒；至多一条待播句段。停止会等待当前短句返回后释放，不强杀模型。")
+                    Text("预加载写磁盘：最多6条句段/8MiB；播放内存队列仍目标≤2秒、硬上限4秒。全部生成模式只保存合并WAV。停止会等待当前推理返回，不强杀模型。")
                         .font(.caption).foregroundStyle(.secondary)
                     Text(generationResult).font(.caption).textSelection(.enabled)
                 }
@@ -92,9 +94,9 @@ struct ContentView: View {
                         Text(route.title)
                         Text(route.conclusion).font(.caption).foregroundStyle(.secondary)
                     }
-                    Text("三句/六句对照均使用完整EOS、Flow High两步与HiFT Low；800MB底线不降低。只预存小批token，不将整批WAV保存在内存；六句首块可能更晚。")
+                    Text("生成仍用完整EOS、Flow High两步与HiFT Low；800MB底线不变。预加载只是播放策略，不开启全模型常驻。")
                         .font(.caption).foregroundStyle(.secondary)
-                    Text("先载入12句，分别冷启动测三句批量和六句批量；通过后再用24句复测。每3句记录累计RTF、温度和内存；最终RTF计入初始化/失败/释放，结果仍只分享一个统一报告。")
+                    Text("五句分别测预加载三句、全部生成后播放；都用同一CPU三句批量生成。报告保留首播等待、实际断供、额外补缓冲与内存，不以增加等待冒充推理提速。")
                         .font(.caption).foregroundStyle(.secondary)
                 }
                 Section("统一测试报告 · 只发这一个") {
@@ -148,7 +150,8 @@ struct ContentView: View {
     private func startSentences(mode: String? = nil) {
         wavPlayer?.stop()
         sentences.start(text: text, directory: models.directory.path, optimized: true,
-                        threads: threads, player: player, resident: false, lowHiFT: lowHiFT, experimentMode: mode)
+                        threads: threads, player: player, resident: false, lowHiFT: lowHiFT,
+                        experimentMode: mode ?? "three-sentence-staged", playbackMode: playbackMode)
     }
     private func startExperiments(_ routes: [String]) {
         wavPlayer?.stop(); player.stop()

@@ -24,6 +24,8 @@ final class SentenceStream: ObservableObject {
     @Published private(set) var peakMB = 0.0
     @Published private(set) var minAvailableMB = Double.greatestFiniteMagnitude
     @Published private(set) var hasCompletedAudio = false
+    @Published private(set) var playbackStatus = "尚未播放"
+    @Published private(set) var bufferedAudioSeconds = 0.0
     private var task: Task<Void, Never>?
     private var playbackTask: Task<Void, Error>?
     private let worker = DispatchQueue(label: "cosyvoice.sentence.inference", qos: .userInitiated)
@@ -35,13 +37,25 @@ final class SentenceStream: ObservableObject {
     private var preparationSeconds = 0.0
     private var acousticCallSeconds = 0.0
     private var cleanupSeconds = 0.0
+    private struct ReadyAudio { let url: URL; let seconds: Double; let bytes: Int64 }
+    private var readyAudio: [ReadyAudio] = []
+    private var producerFinished = false
+    private var activeFeeder = false
+    private var diskBytes: Int64 = 0
+    private var peakDiskBytes: Int64 = 0
+    private var peakDiskFiles = 0
+    private var scheduledAudioSeconds = 0.0
+    private var initialBufferAudioSeconds = 0.0
+    private var bufferingStarted = false
+    private var rebufferCount = 0
+    private var playbackFailure: String?
     static var documents: URL { FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0] }
     static var logURL: URL { documents.appendingPathComponent("last-sentence-stream.log") }
     static var audioURL: URL { documents.appendingPathComponent("last-sentence-stream.wav") }
     private var partialURL: URL { Self.documents.appendingPathComponent("last-sentence-stream.partial.wav") }
     private var diagnostics: URL { Self.documents.appendingPathComponent("last-sentence-diagnostics.log") }
 
-    func start(text: String, directory: String, optimized: Bool, threads: Int, player: ChunkPlayer, resident: Bool = false, lowHiFT: Bool = true, experimentMode: String? = nil) {
+    func start(text: String, directory: String, optimized: Bool, threads: Int, player: ChunkPlayer, resident: Bool = false, lowHiFT: Bool = true, experimentMode: String? = nil, playbackMode: PlaybackMode = .immediate) {
         guard !isRunning else { return }
         let plan: [String]
         do { plan = try SentencePlanner.plan(text, limit: resident || experimentMode != nil ? 18 : SentencePlanner.defaultLimit) }
@@ -52,14 +66,19 @@ final class SentenceStream: ObservableObject {
         audioSeconds = 0; computeSeconds = 0; startupSeconds = 0; generatedCount = 0; plannedCount = plan.count
         firstQueuedSeconds = nil; peakMB = 0; minAvailableMB = .greatestFiniteMagnitude
         checkpoints = []; preparationSeconds = 0; acousticCallSeconds = 0; cleanupSeconds = 0
+        readyAudio = []; producerFinished = false; activeFeeder = false; diskBytes = 0
+        peakDiskBytes = 0; peakDiskFiles = 0; scheduledAudioSeconds = 0
+        initialBufferAudioSeconds = 0; bufferingStarted = false; rebufferCount = 0; playbackFailure = nil
+        playbackStatus = "等待音频准备"; bufferedAudioSeconds = 0
         started = ProcessInfo.processInfo.systemUptime
         let routeLabel = experimentMode == "six-sentence-staged" ? "六句分阶段/唯一Flow复用" : (experimentMode == "llm-chain-reuse" ? "整链LLM复用/按需释放" : (experimentMode == "two-sentence-staged" ? "两句分阶段/唯一Flow复用" : (experimentMode == "three-sentence-staged" ? "三句分阶段/唯一Flow复用" : (resident ? "自适应常驻/串行回退" : "串行基线"))))
-        reportID = DiagnosticReport.begin(kind: "sentence-generation", label: routeLabel,
+        reportID = DiagnosticReport.begin(kind: "sentence-generation", label: routeLabel + " · " + playbackMode.title,
             parameters: ["text": text, "optimized": optimized, "threads": threads, "hiFTLow": lowHiFT,
-                         "adaptive": resident, "pipelineMode": experimentMode ?? "serial", "initialSegments": plan.count], sources: DiagnosticReport.sentenceSources)
+                         "adaptive": resident, "pipelineMode": experimentMode ?? "serial", "initialSegments": plan.count,
+                         "playbackMode": playbackMode.rawValue], sources: DiagnosticReport.sentenceSources)
         try? Data().write(to: Self.logURL, options: .atomic)
         try? Data().write(to: diagnostics, options: .atomic)
-        record("开始句级流水：\(plan.count) 段；\(optimized ? "32 帧对齐/DSP 优化" : "v0.4.1 基线")；CPU \(threads) 线程；播放队列目标≤2秒、硬上限4秒；至多1句待播文件；不是 token 级流式")
+        record("开始句级流水：\(plan.count) 段；\(optimized ? "32 帧对齐/DSP 优化" : "v0.4.1 基线")；CPU \(threads) 线程；播放队列目标≤2秒、硬上限4秒；待播文件上限见播放模式；不是 token 级流式")
         if experimentMode == "llm-chain-reuse" {
             record("LLM复用候选：每句清KV；尝试保留LLM穿过声学阶段，按规划释放；Flow逐句创建/销毁，最多160 speech token")
         } else if LongTextBenchmarks.batchLimit(experimentMode) > 0 {
@@ -69,14 +88,15 @@ final class SentenceStream: ObservableObject {
             record(resident ? "自适应路线：尝试唯一Flow384；LLM前1800MB不足则释放Flow，本批改串行；每句重新prefill，无跨句KV；800MB底线不变" : "对照版：每句释放全部模型，每段最多160语音token/6.4秒")
         }
         record("HiFT core=\(lowHiFT ? "Low" : "High")，F0与Flow仍High；非token级流式")
+        record("播放模式：\(playbackMode.title)；预加载在磁盘，最多6条文件/8MiB，内存播放队列仍≤2秒目标/4秒硬限；不宣称生成速度改善")
         if let experimentMode { record("新整链路线：\(experimentMode)；先短文验收，不保证RTF降低/分钟级内存稳定；分阶段路线首句可能更晚") }
-        task = Task { await run(plan: plan, directory: directory, optimized: optimized, threads: threads, player: player, resident: resident, lowHiFT: lowHiFT, experimentMode: experimentMode) }
+        task = Task { await run(plan: plan, directory: directory, optimized: optimized, threads: threads, player: player, resident: resident, lowHiFT: lowHiFT, experimentMode: experimentMode, playbackMode: playbackMode) }
     }
 
     func stop() {
         guard isRunning else { return }
         stopping = true
-        task?.cancel(); playbackTask?.cancel(); player?.stop()
+        task?.cancel(); playbackTask?.cancel(); player?.stop(resetMetrics: false)
         status = "已停止播放；等待当前短句推理返回并释放，不再生成下一句。"
         record("用户停止：当前 native 调用不强杀，返回后结束；未完成部分不冒充完整音频")
     }
@@ -199,6 +219,8 @@ final class SentenceStream: ObservableObject {
             try input.read(into: buffer, frameCount: 4800)
             guard buffer.frameLength > 0 else { break }
             try player.enqueueBuffer(buffer)
+            scheduledAudioSeconds += Double(buffer.frameLength) / 24_000
+            bufferedAudioSeconds = max(0, audioSeconds - scheduledAudioSeconds + player.queuedSeconds)
             lastProgress = ProcessInfo.processInfo.systemUptime
             previousQueue = player.queuedSeconds
             if firstQueuedSeconds == nil {
@@ -206,6 +228,63 @@ final class SentenceStream: ObservableObject {
                 record(String(format: "首句首块已入播放队列 %.3f 秒（不是扬声器实测时间）", firstQueuedSeconds!))
             }
             await Task.yield()
+        }
+    }
+
+    private func drainReadyAudio(player: ChunkPlayer) async throws {
+        var waiting = false
+        while !producerFinished || !readyAudio.isEmpty {
+            try Task.checkCancellation()
+            bufferedAudioSeconds = max(0, audioSeconds - scheduledAudioSeconds + player.queuedSeconds)
+            // Restart at a sentence boundary after a true drain, rather than
+            // repeatedly playing tiny fragments while inference is behind.
+            if !bufferingStarted || (player.queuedSeconds == 0 && !producerFinished) {
+                if !PlaybackMode.buffered.mayStart(readyFiles: readyAudio.count, producerFinished: producerFinished) {
+                    if bufferingStarted && !waiting {
+                        rebufferCount += 1; waiting = true
+                        record("预加载队列耗尽，等待补齐三句或生成结束；没有隐藏停顿")
+                    }
+                    playbackStatus = bufferingStarted ? "正在补充缓冲：\(readyAudio.count)/3句" : "预加载中：\(readyAudio.count)/3句"
+                    try await Task.sleep(nanoseconds: 50_000_000)
+                    continue
+                }
+                if !bufferingStarted { initialBufferAudioSeconds = bufferedAudioSeconds }
+                bufferingStarted = true; waiting = false
+            }
+            guard !readyAudio.isEmpty else {
+                try await Task.sleep(nanoseconds: 30_000_000); continue
+            }
+            let item = readyAudio.removeFirst()
+            activeFeeder = true; playbackStatus = "预加载播放中，继续准备后续句子"
+            do { try await feed(item.url, player: player) }
+            catch { activeFeeder = false; throw error }
+            activeFeeder = false
+            try FileManager.default.removeItem(at: item.url)
+            diskBytes -= item.bytes
+        }
+    }
+
+    private func stageForPlayback(source: URL, directory: URL, index: Int, duration: Double, player: ChunkPlayer) async throws {
+        let attributes = try FileManager.default.attributesOfItem(atPath: source.path)
+        let bytes = (attributes[.size] as? NSNumber)?.int64Value ?? 0
+        guard bytes > 0 && bytes <= PlaybackDiskBudget.maxBytes else { throw SentenceStreamError.failed("预加载句段文件过大或为空。") }
+        let waitStart = ProcessInfo.processInfo.systemUptime
+        while !PlaybackDiskBudget.mayAppend(files: readyAudio.count + (activeFeeder ? 1 : 0), bytes: diskBytes, newBytes: bytes) {
+            try Task.checkCancellation()
+            if let playbackFailure { throw SentenceStreamError.failed(playbackFailure) }
+            guard ProcessInfo.processInfo.systemUptime - waitStart < 30 else { throw SentenceStreamError.failed("预加载磁盘队列30秒未腾出空间，已停止。") }
+            try await Task.sleep(nanoseconds: 50_000_000)
+        }
+        let url = directory.appendingPathComponent("sentence-\(index).wav")
+        try FileManager.default.copyItem(at: source, to: url)
+        readyAudio.append(ReadyAudio(url: url, seconds: duration, bytes: bytes)); diskBytes += bytes
+        peakDiskBytes = max(peakDiskBytes, diskBytes)
+        peakDiskFiles = max(peakDiskFiles, readyAudio.count + (activeFeeder ? 1 : 0))
+        if playbackTask == nil {
+            playbackTask = Task {
+                do { try await self.drainReadyAudio(player: player) }
+                catch { self.playbackFailure = error.localizedDescription; throw error }
+            }
         }
     }
 
@@ -223,7 +302,7 @@ final class SentenceStream: ObservableObject {
         return Double(input.length) / 24_000
     }
 
-    private func run(plan: [String], directory: String, optimized: Bool, threads: Int, player: ChunkPlayer, resident: Bool, lowHiFT: Bool, experimentMode: String?) async {
+    private func run(plan: [String], directory: String, optimized: Bool, threads: Int, player: ChunkPlayer, resident: Bool, lowHiFT: Bool, experimentMode: String?, playbackMode: PlaybackMode) async {
         var writer: AVAudioFile?
         var residentSession: CosyVoiceResidentFlow?
         var pipelineSession: CosyVoicePipeline?
@@ -234,11 +313,17 @@ final class SentenceStream: ObservableObject {
         let stagedBatchLimit = LongTextBenchmarks.batchLimit(experimentMode)
         let staged = stagedBatchLimit > 0
         var completedPlayback = false
+        let spool = FileManager.default.temporaryDirectory.appendingPathComponent("cosyvoice-playback-\(UUID().uuidString)", isDirectory: true)
+        var createdSpool = false
         // Only these two app-owned scratch files can be replaced/removed here.
         let slots = (0...1).map { Self.documents.appendingPathComponent("sentence-stream-slot-\($0).wav") }
         defer {
             writer = nil
             for url in slots { try? FileManager.default.removeItem(at: url) }
+            // Only remove the exact UUID directory this run created, after its
+            // feeder has returned. User model/audio directories are untouched.
+            if createdSpool { try? FileManager.default.removeItem(at: spool) }
+            readyAudio = []; diskBytes = 0
             playbackTask = nil; task = nil; isRunning = false
             DiagnosticReport.finish(reportID, state: completedPlayback ? "completed" : (stopping ? "cancelled" : "not-completed"),
                 result: ["message": status, "generatedSegments": generatedCount, "plannedSegments": plannedCount,
@@ -252,6 +337,11 @@ final class SentenceStream: ObservableObject {
                          "checkpoints": checkpoints, "batchLimit": stagedBatchLimit,
                          "preparationSeconds": preparationSeconds, "acousticCallSeconds": acousticCallSeconds,
                          "cleanupSeconds": cleanupSeconds,
+                         "playbackMode": playbackMode.rawValue, "initialBufferAudioSeconds": initialBufferAudioSeconds,
+                         "rebufferCount": rebufferCount, "peakPlaybackDiskFiles": peakDiskFiles,
+                         "peakPlaybackDiskBytes": peakDiskBytes, "audioQueueTargetSeconds": 2, "audioQueueHardLimitSeconds": 4,
+                         "playbackDiskScope": "temporary preload files only; excludes merged output WAV",
+                         "elapsedIncludingPlaybackSeconds": ProcessInfo.processInfo.systemUptime - started,
                          "timingScope": "compute includes setup, LLM preparation, acoustic calls, failures and cleanup; wall also includes queue/file/report waits",
                          "generationWallSeconds": generationWallSeconds.map { $0 as Any } ?? NSNull(),
                          "generationWallRTF": generationWallSeconds.map { audioSeconds > 0 ? $0/audioSeconds as Any : NSNull() } ?? NSNull(),
@@ -261,6 +351,10 @@ final class SentenceStream: ObservableObject {
         var pending = plan.map { (text: $0, depth: 0) }
         var at = 0
         do {
+            if playbackMode == .buffered {
+                try FileManager.default.createDirectory(at: spool, withIntermediateDirectories: false)
+                createdSpool = true
+            }
             if let experimentMode {
                 let begin = ProcessInfo.processInfo.systemUptime
                 let setup = await beginPipeline(directory, mode: experimentMode)
@@ -296,6 +390,7 @@ final class SentenceStream: ObservableObject {
                 commonFormat: .pcmFormatFloat32, interleaved: false)
             while at < pending.count {
                 try Task.checkCancellation()
+                if let playbackFailure { throw SentenceStreamError.failed(playbackFailure) }
                 if !resident && pipelineSession == nil { try await memoryGate() }
                 if staged, batchRemaining == 0, let pipelineSession {
                     let batch = Array(pending[at..<min(pending.count,at+stagedBatchLimit)].map(\.text))
@@ -328,7 +423,7 @@ final class SentenceStream: ObservableObject {
                     guard batchRemaining == batch.count else { throw SentenceStreamError.failed("预生成token队列数量错误") }
                     record("已准备\(batchRemaining)句完整EOS token，LLM已释放；开始唯一Flow声学阶段")
                 }
-                status = "生成第 \(at + 1)/\(pending.count) 段；已生成 \(String(format: "%.2f", audioSeconds)) 秒，上一句可同时播放。"
+                status = "生成第 \(at + 1)/\(pending.count) 段；已生成 \(String(format: "%.2f", audioSeconds)) 秒；\(playbackMode == .complete ? "全部生成后再播放" : "按所选缓冲策略播放")。"
                 record("句 \(at + 1)/\(pending.count) 开始，\(pending[at].text.utf16.count) UTF-16 单元")
                 let begin = ProcessInfo.processInfo.systemUptime
                 let output = await infer(pending[at].text, directory: directory, optimized: optimized, threads: threads, session: residentSession, lowHiFT: lowHiFT, pipeline: pipelineSession, staged: staged)
@@ -364,11 +459,15 @@ final class SentenceStream: ObservableObject {
                 }
                 // The native producer writes one fixed filename. Copy it to
                 // alternating bounded slots BEFORE starting another inference.
+                let source = URL(fileURLWithPath: CosyVoiceGenerate.generatedWavPath())
                 let slot = slots[at % 2]
-                try? FileManager.default.removeItem(at: slot)
-                try FileManager.default.copyItem(at: URL(fileURLWithPath: CosyVoiceGenerate.generatedWavPath()), to: slot)
-                let duration = try appendAudio(slot, writer: writer!)
+                if playbackMode == .immediate {
+                    try? FileManager.default.removeItem(at: slot)
+                    try FileManager.default.copyItem(at: source, to: slot)
+                }
+                let duration = try appendAudio(playbackMode == .immediate ? slot : source, writer: writer!)
                 audioSeconds += duration; generatedCount += 1
+                bufferedAudioSeconds = max(0, audioSeconds - scheduledAudioSeconds + player.queuedSeconds)
                 record(String(format: "句 %d 完成，音频 %.2f 秒，推理 %.3f 秒，单句 RTF %.3f；累计计算 RTF %.3f", at + 1, duration, elapsed, elapsed / duration, computeSeconds / audioSeconds))
                 if generatedCount % 3 == 0 || at + 1 == pending.count {
                     checkpoints.append(["segments": generatedCount, "audioSeconds": audioSeconds,
@@ -381,9 +480,15 @@ final class SentenceStream: ObservableObject {
                 }
                 // Await only the previous sentence's file feeder, not speaker
                 // drain. This allows playback to overlap ONE native generation.
-                if let previous = playbackTask { try await previous.value }
-                try Task.checkCancellation()
-                playbackTask = Task { try await self.feed(slot, player: player) }
+                if playbackMode == .immediate {
+                    if let previous = playbackTask { try await previous.value }
+                    try Task.checkCancellation()
+                    playbackTask = Task { try await self.feed(slot, player: player) }
+                } else if playbackMode == .buffered {
+                    try await stageForPlayback(source: source, directory: spool, index: at, duration: duration, player: player)
+                } else {
+                    playbackStatus = "先完整生成：\(generatedCount)/\(pending.count)句，暂不播放"
+                }
                 at += 1
                 if staged { batchRemaining -= 1 }
             }
@@ -402,6 +507,12 @@ final class SentenceStream: ObservableObject {
             } else { try FileManager.default.moveItem(at: partialURL, to: Self.audioURL) }
             hasCompletedAudio = true
             generationWallSeconds = ProcessInfo.processInfo.systemUptime - started
+            producerFinished = true
+            if playbackMode == .complete {
+                initialBufferAudioSeconds = audioSeconds
+                playbackStatus = "全部音频已就绪，连续播放中"
+                playbackTask = Task { try await self.feed(Self.audioURL, player: player) }
+            }
             record(String(format: "全部生成完成：%d 段，音频 %.2f 秒；计算 %.3f 秒，计算 RTF %.3f；生成墙钟 %.3f 秒（含回收/队列等待），墙钟 RTF %.3f；首块入队 %.3f 秒；播放队列断供观测 %d 次/%.3f 秒；采样峰值 %.0f MB，最低可用 %.0f MB", generatedCount, audioSeconds, computeSeconds, computeSeconds / audioSeconds, ProcessInfo.processInfo.systemUptime - started, (ProcessInfo.processInfo.systemUptime - started) / audioSeconds, firstQueuedSeconds ?? -1, player.gapCount, player.gapSeconds, peakMB, minAvailableMB))
             if let last = playbackTask { try await last.value }
             status = "生成完成，正在播完队列…"
@@ -414,9 +525,14 @@ final class SentenceStream: ObservableObject {
             record(String(format: "播放完成；队列断供观测 %d 次/%.3f 秒；非 token 级流式", player.gapCount, player.gapSeconds))
             status = String(format: "完成 %d 段 / %.2f 秒音频；计算 RTF %.3f；首块入队 %.3f 秒；队列断供 %d 次。", generatedCount, audioSeconds, computeSeconds / audioSeconds, firstQueuedSeconds ?? -1, player.gapCount)
             completedPlayback = true
+            playbackStatus = "播放完成"
+            bufferedAudioSeconds = 0
         } catch {
-            playbackTask?.cancel(); player.stop()
+            producerFinished = true
+            playbackTask?.cancel(); player.stop(resetMetrics: false)
+            if let playbackTask { _ = try? await playbackTask.value }
             status = stopping ? "已停止；当前模型已返回，未继续生成。" : "停止：\(error.localizedDescription)"
+            playbackStatus = stopping ? "已停止播放" : "播放未完成"
             record(status + "；已生成部分仍保留为 partial 文件，不冒充整篇完成")
         }
         if let session = residentSession { await closeResident(session) }
