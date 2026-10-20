@@ -9,6 +9,7 @@ struct ContentView: View {
     @State private var text = LongTextBenchmarks.fiveSentenceText
     private let threads = ExperimentCatalog.defaultThreads
     @State private var lowHiFT = true
+    @State private var useW8Flow = true
     @State private var playbackMode: PlaybackMode = .buffered
     @State private var singleRunning = false
     @State private var generationResult = "尚未生成"
@@ -50,6 +51,9 @@ struct ContentView: View {
                     Text("长文≤2000 UTF-16单元；自动拆句，不截断冒充读完。单句按钮≤40单元。")
                         .font(.caption).foregroundStyle(.secondary)
                     Toggle("HiFT core Low", isOn: $lowHiFT).disabled(busy)
+                    Toggle("Flow FFN W8 · 低内存整数", isOn: $useW8Flow).disabled(busy)
+                    Text("W8已完成五条真机Flow探针；本轮接入真实LLM→Conditioner→W8 Flow→HiFT。默认不裁剪输出头；关闭W8开关可用原版对照。缺少候选文件会明确停止，不偷偷回退。")
+                        .font(.caption).foregroundStyle(.secondary)
                     Text("已试听选择Low；F0、Flow仍High，Flow两步。关闭可对照High。")
                         .font(.caption).foregroundStyle(.secondary)
                     Text("当前配置：LLM / Flow / HiFT 均4线程；Flow CPU High两步，F0 High。")
@@ -100,7 +104,7 @@ struct ContentView: View {
                     }
                     Text("生成仍用完整EOS、Flow High两步与HiFT Low；800MB底线不变。预加载只是播放策略，不开启全模型常驻。")
                         .font(.caption).foregroundStyle(.secondary)
-                    Text("五句分别测预加载三句、全部生成后播放；都用同一CPU三句批量生成。报告保留首播等待、实际断供、额外补缓冲与内存，不以增加等待冒充推理提速。")
+                    Text("输出头配对按钮自动用固定五句、全部生成后播放。两边均用Flow W8、相同seed和speech/EOS范围，逐句独立LLM；它们与默认的批内复用路线调度不同，不直接归因比较。原17个文件与W8模型保留；另需llm-speech-head.mnn和同名.weight两个文件，约208MB。")
                         .font(.caption).foregroundStyle(.secondary)
                 }
                 Section("统一测试报告 · 只发这一个") {
@@ -110,6 +114,13 @@ struct ContentView: View {
                         .font(.caption).foregroundStyle(.secondary)
                 }
                 Section("播放与日志") {
+                    ForEach([("end-to-end-original.wav", "原版整链"), ("end-to-end-flow-w8.wav", "Flow W8整链"), ("end-to-end-head-full.wav", "输出头配对A · 完整头"), ("end-to-end-head-reduced.wav", "输出头配对B · 裁剪头")], id: \.0) { item in
+                        let url = SentenceStream.documents.appendingPathComponent(item.0)
+                        if exists(url) {
+                            Button("试听最近成功：\(item.1)") { play(url) }.disabled(busy)
+                            ShareLink("分享音频：\(item.1)", item: url).disabled(busy)
+                        }
+                    }
                     if exists(URL(fileURLWithPath: CosyVoiceGenerate.generatedWavPath())) {
                         Button("试听最近成功短句") { play(URL(fileURLWithPath: CosyVoiceGenerate.generatedWavPath())) }.disabled(busy)
                         ShareLink("分享最近短句 WAV", item: URL(fileURLWithPath: CosyVoiceGenerate.generatedWavPath())).disabled(busy)
@@ -153,22 +164,24 @@ struct ContentView: View {
     private func exists(_ url: URL) -> Bool { FileManager.default.fileExists(atPath: url.path) }
     private func startSentences(mode: String? = nil) {
         wavPlayer?.stop()
-        sentences.start(text: text, directory: models.directory.path, optimized: true,
+        let actualMode = mode ?? (useW8Flow ? "three-sentence-staged-w8" : "three-sentence-staged")
+        let headPair = LongTextBenchmarks.headMode(actualMode) != nil
+        sentences.start(text: headPair ? LongTextBenchmarks.fiveSentenceText : text, directory: models.directory.path, optimized: true,
                         threads: threads, player: player, resident: false, lowHiFT: lowHiFT,
-                        experimentMode: mode ?? "three-sentence-staged", playbackMode: playbackMode)
+                        experimentMode: actualMode, playbackMode: headPair ? .complete : playbackMode)
     }
     private func startExperiments(_ routes: [String]) {
         wavPlayer?.stop(); player.stop()
         experiments.start(routes: routes, directory: models.directory.path)
     }
     private func generateSingle() {
-        let directory = models.directory.path, input = text, threadCount = threads, low = lowHiFT
+        let directory = models.directory.path, input = text, threadCount = threads, low = lowHiFT, w8 = useW8Flow
         wavPlayer?.stop(); player.stop(); singleRunning = true
         generationResult = "正在生成；请保持前台，失败后分享日志。"
         let runID = DiagnosticReport.begin(kind: "single-generation", label: "当前短句生成",
-            parameters: ["text": input, "threads": threadCount, "hiFTLow": low, "optimized": true], sources: DiagnosticReport.generationSources)
+            parameters: ["text": input, "threads": threadCount, "hiFTLow": low, "flowW8": w8, "llmHeadPruned": false, "optimized": true], sources: DiagnosticReport.generationSources)
         DispatchQueue.global(qos: .userInitiated).async {
-            let result = CosyVoiceGenerate.generateText(input, atDirectory: directory, optimized: true, cpuThreads: threadCount, lowPrecisionHiFT: low)
+            let result = CosyVoiceGenerate.generateText(input, atDirectory: directory, optimized: true, cpuThreads: threadCount, lowPrecisionHiFT: low, flowW8: w8)
             DispatchQueue.main.async {
                 DiagnosticReport.finish(runID, state: result["success"] as? Bool == true ? "completed" : "not-completed", result: result)
                 singleRunning = false

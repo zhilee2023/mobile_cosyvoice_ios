@@ -26,6 +26,13 @@
             if (!json || ![json writeToFile:path atomically:YES]) {
                 summary[@"success"]=@NO; summary[@"message"]=@"试验已返回，但JSON报告写入失败，请分享文本日志";
             }
+            // A failed retry must never overwrite the usable reference cache.
+            // Preserve every last-attempt JSON above for diagnostics separately.
+            if([route isEqual:@"flow-w8-reference"]&&[summary[@"success"] boolValue]&&rows.count==5) {
+                if(![json writeToFile:documentPath(@"last-success-flow-w8-reference.json") atomically:YES]) {
+                    summary[@"success"]=@NO;summary[@"message"]=@"成功参考缓存写入失败；旧成功缓存保留，未自动覆盖";
+                }
+            }
             return summary;
         };
         if(!waitAvailable(2900000000ULL,trace,@"独立路线启动前"))return finish(false,@"初始余量不足，请冷启动后单独测本路线");

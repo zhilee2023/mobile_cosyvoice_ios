@@ -1,0 +1,13 @@
+{
+  "recipe": "cosyvoice3-w8-speech-head-v1",
+  "sourceGraph": {"file": "llm.mnn", "bytes": 419640, "sha256": "939c364630a8b61e7acfbdbda65fa4d0ddc973e751cef6c2ec84a1e3bb918bad"},
+  "sourceWeight": {"file": "llm.mnn.weight", "bytes": 352844666, "sha256": "325948c3809fba1a98c19aa223537d7d984e5db206bf165a33cc6aef80470ca3"},
+  "candidateGraph": {"file": "llm-speech-head.mnn", "bytes": 419640, "sha256": "e6fe66b5a72e6cbaf205d8cb15c8544f9bb84ee1042ae1513d1c8b105721dee4"},
+  "candidateWeight": {"file": "llm-speech-head.mnn.weight", "bytes": 207991202, "sha256": "ae4862dcf000224e5909012c8de29078be4e4fbc957781424027bfb8a6c8f707"},
+  "globalVocabulary": 158720,
+  "speechOffset": 151924,
+  "speechCount": 6561,
+  "reserved": 158485,
+  "eos": 158486,
+  "candidateWidth": 6563
+}

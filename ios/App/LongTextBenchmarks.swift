@@ -25,9 +25,36 @@ enum LongTextBenchmarks {
     static func batchLimit(_ mode: String?) -> Int {
         switch mode {
         case "two-sentence-staged": return 2
-        case "three-sentence-staged": return 3
+        case "three-sentence-staged", "three-sentence-staged-w8", "three-sentence-staged-w8-head-full", "three-sentence-staged-w8-head-reduced": return 3
         case "six-sentence-staged": return 6
         default: return 0
+        }
+    }
+    static func usesW8(_ mode: String?) -> Bool {
+        ["three-sentence-staged-w8", "three-sentence-staged-w8-head-full", "three-sentence-staged-w8-head-reduced"].contains(mode ?? "")
+    }
+    static func headMode(_ mode: String?) -> String? {
+        switch mode {
+        case "three-sentence-staged-w8-head-full": return "full"
+        case "three-sentence-staged-w8-head-reduced": return "reduced"
+        default: return nil
+        }
+    }
+    static func title(_ mode: String?) -> String? {
+        switch mode {
+        case "three-sentence-staged-w8": return "Flow W8完整生成/三句批量"
+        case "three-sentence-staged-w8-head-full": return "输出头配对A/完整W8头/Flow W8"
+        case "three-sentence-staged-w8-head-reduced": return "输出头配对B/裁剪W8头/Flow W8"
+        default: return nil
+        }
+    }
+    static func audioArchiveName(_ mode: String?) -> String? {
+        switch mode {
+        case "three-sentence-staged": return "end-to-end-original.wav"
+        case "three-sentence-staged-w8": return "end-to-end-flow-w8.wav"
+        case "three-sentence-staged-w8-head-full": return "end-to-end-head-full.wav"
+        case "three-sentence-staged-w8-head-reduced": return "end-to-end-head-reduced.wav"
+        default: return nil
         }
     }
 }

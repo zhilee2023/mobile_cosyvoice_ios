@@ -51,7 +51,7 @@ if ([@[@"flow-w8-reference",@"flow-w8-normal",@"flow-w8-low"] containsObject:rou
     };
     NSDictionary *saved=nil;
     if(!baseline) {
-        NSData *data=[NSData dataWithContentsOfFile:documentPath(@"last-experiment-flow-w8-reference.json")];
+        NSData *data=[NSData dataWithContentsOfFile:documentPath(@"last-success-flow-w8-reference.json")];
         id item=data?[NSJSONSerialization JSONObjectWithData:data options:0 error:nil]:nil;
         saved=[item isKindOfClass:NSDictionary.class]?item:nil;
         if(![saved[@"success"] boolValue] || ![saved[@"version"] isEqual:[NSBundle.mainBundle objectForInfoDictionaryKey:@"CFBundleShortVersionString"]] ||

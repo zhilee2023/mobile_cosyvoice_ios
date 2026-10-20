@@ -31,6 +31,11 @@ jobs:
           NSZombieEnabled=YES build-tests/failure-check
           python3 -m unittest discover -s tests -p test_report_analysis.py
           python3 -m unittest discover -s tests -p test_flow_w8_phone.py
+          python3 -m unittest discover -s tests -p test_speech_head_patch.py
+          python3 -m unittest discover -s tests -p test_end_to_end_routes.py
+          python3 -m unittest discover -s tests -p test_head_e2e_report.py
+          clang++ -O2 -std=c++17 -Iios/Bridge tests/speech_head_check.cpp -o build-tests/speech-head-check
+          build-tests/speech-head-check
           clang++ -O2 -std=c++17 -Iios/Bridge tests/flow_w8_check.cpp -o build-tests/flow-w8-check
           build-tests/flow-w8-check
           clang++ -O2 -std=c++17 -Iios/Bridge tests/dsp_check.cpp -o build-tests/dsp-check
@@ -47,6 +52,7 @@ jobs:
         run: |
           git clone --depth 1 --branch 3.6.1 https://github.com/alibaba/MNN.git MNN
           git -C MNN submodule update --init --recursive --depth 1
+          python3 scripts/patch_mnn_speech_head.py MNN
           cd MNN
           sh package_scripts/ios/buildiOS.sh \
             -DMNN_LOW_MEMORY=ON \
@@ -93,6 +99,7 @@ jobs:
           assert info['LSSupportsOpeningDocumentsInPlace'] is True
           assert (app / 'model-manifest.json').is_file()
           assert (app / 'flow-w8-manifest.json').is_file()
+          assert (app / 'speech-head-manifest.json').is_file()
           assert not list(app.rglob('*.inc')), 'Bridge includes must not be bundled as resources'
           print('Unsigned app and file sharing verified')
           PY

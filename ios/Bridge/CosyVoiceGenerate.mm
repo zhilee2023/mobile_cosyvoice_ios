@@ -18,6 +18,7 @@
 #include <complex>
 #include <cstdio>
 #include <cstring>
+#include <exception>
 #include <fcntl.h>
 #include <functional>
 #include <iterator>
@@ -229,7 +230,8 @@ bool generateSpeechTokens(NSString *directory, NSString *text, const std::vector
                           Trace &trace, std::vector<int> &speech, CosyVoiceFailureOutput failure, int cpuThreads, bool *limitReached,
                           bool residentProbe = false, const std::function<bool()> &whileLlmAlive = {},
                           bool retainedFlow = false, int speechLimit = kMaxSpeechTokens,
-                          LlmOwner *reusable = nullptr, NSMutableDictionary *metrics = nil, bool deterministic = false) {
+                          LlmOwner *reusable = nullptr, NSMutableDictionary *metrics = nil, bool deterministic = false,
+                          NSString *headExperiment = nil, int experimentSeed = 2307) {
     @autoreleasepool {
         NativeLogCapture nativeLog;
         if (!nativeLog.active) trace.record(@"警告：无法完整捕获 MNN 原始日志，仍将记录阶段与文件检查");
@@ -250,6 +252,16 @@ bool generateSpeechTokens(NSString *directory, NSString *text, const std::vector
         config[@"repetition_penalty"] = @1.15;
         config[@"max_new_tokens"] = @(speechLimit + 1);
         config[@"async"] = @NO;
+        [config removeObjectForKey:@"cosyvoice_head_experiment"];
+        [config removeObjectForKey:@"cosyvoice_experiment_seed"];
+        if(headExperiment) {
+            if((![headExperiment isEqual:@"full"]&&![headExperiment isEqual:@"reduced"])||reusable) {
+                *failure=@"输出头配对实验必须逐句使用独立LLM";return false;
+            }
+            config[@"cosyvoice_head_experiment"]=headExperiment;
+            config[@"cosyvoice_experiment_seed"]=@(experimentSeed);
+            trace.record([NSString stringWithFormat:@"输出头端到端实验 %@；双方仅允许speech/EOS并恢复全局编号；seed=%d；每句独立LLM、原始mixed采样",headExperiment,experimentSeed]);
+        }
         // MNN 3.6.1 uses base_dir + filename verbatim; absolute filenames here
         // would duplicate the directory. Metadata and embedding need the same
         // explicit resolution as the graph, weight and tokenizer.
@@ -260,6 +272,8 @@ bool generateSpeechTokens(NSString *directory, NSString *text, const std::vector
         trace.record([NSString stringWithFormat:@"LLM 模型目录：%@；文件名使用相对路径", config[@"base_dir"]]);
         for (NSString *name in @[@"llm_config", @"llm_model", @"llm_weight", @"tokenizer_file", @"embedding_file"]) {
             id value = base[name] ?: defaults[name];
+            if([headExperiment isEqual:@"reduced"]&&[name isEqual:@"llm_model"])value=@"llm-speech-head.mnn";
+            if([headExperiment isEqual:@"reduced"]&&[name isEqual:@"llm_weight"])value=@"llm-speech-head.mnn.weight";
             if (![value isKindOfClass:NSString.class] || [value length] == 0 ||
                 [value isAbsolutePath] || [[value pathComponents] containsObject:@".."]) {
                 *failure = [NSString stringWithFormat:@"LLM %@ 必须是有效相对文件名", name];
@@ -324,7 +338,12 @@ bool generateSpeechTokens(NSString *directory, NSString *text, const std::vector
         const int64_t prefillBefore = beforeContext ? beforeContext->prefill_us : 0;
         const int64_t decodeBefore = beforeContext ? beforeContext->decode_us : 0;
         started = std::chrono::steady_clock::now();
-        auto output = llm->generate(input, outputLimit);
+        std::vector<int> output;
+        try { output=llm->generate(input, outputLimit); }
+        catch(const std::exception &error) {
+            nativeLog.recordFailure(trace);
+            *failure=[NSString stringWithFormat:@"LLM采样异常，已停止：%s",error.what()];return false;
+        }
         if (!sampledBudgetOK(trace)) { *failure=@"LLM前向期间可用内存或20ms采样低于800 MB，停止"; return false; }
         const auto *context = llm->getContext();
         const int64_t prefillAfter = context ? context->prefill_us : 0;
@@ -343,6 +362,11 @@ bool generateSpeechTokens(NSString *directory, NSString *text, const std::vector
             if (token == kSpeechEos) eos = true;
             else if (token >= kSpeechOffset && token <= kSpeechOffset + 6560) speech.push_back(token - kSpeechOffset);
             else ++invalidCount;
+        }
+        if(metrics) {
+            metrics[@"eosValidated"]=@(eos);metrics[@"invalidTokens"]=@(invalidCount);
+            metrics[@"speechTokens"]=@(speech.size());metrics[@"headMode"]=headExperiment?:@"default-full";
+            if(headExperiment)metrics[@"seed"]=@(experimentSeed);
         }
         trace.record([NSString stringWithFormat:@"LLM 完成 %.3f 秒；prefill=%.3f 秒，decode=%.3f 秒；speech=%zu，非法=%d，EOS=%@，status=%d",
                       secondsSince(started), prefillSeconds,
@@ -389,12 +413,15 @@ bool generateSpeechTokens(NSString *directory, NSString *text, const std::vector
     *failure = @"LLM 已运行，但内存回收未通过门槛；未加载 Flow";
     return false;
 }
+#include "CosyVoiceVerifiedAssets.inc"
 struct Graph {
     std::unique_ptr<MNN::Interpreter, decltype(&MNN::Interpreter::destroy)> net{nullptr, &MNN::Interpreter::destroy};
     MNN::Session *session = nullptr;
     Trace *traceLog = nullptr;
     int cpuThreads;
     bool performance;
+    bool flowW8 = false;
+    NSDictionary *flowIdentity = nil;
     ~Graph() { if (session && net) net->releaseSession(session); }
     Graph(const Graph &) = delete;
     Graph &operator=(const Graph &) = delete;
@@ -525,6 +552,7 @@ bool writeWav(const std::vector<float> &samples, NSString *fileName = @"last-gen
 + (NSDictionary<NSString *, id> *)runAtDirectory:(NSString *)directory text:(nullable NSString *)text lowPrecisionFlow:(BOOL)lowPrecision optimized:(BOOL)optimized cpuThreads:(NSInteger)threads prepareHiFT:(BOOL)prepareHiFT resident:(Graph *)resident;
 + (NSDictionary<NSString *, id> *)runAtDirectory:(NSString *)directory text:(nullable NSString *)text lowPrecisionFlow:(BOOL)lowPrecision optimized:(BOOL)optimized cpuThreads:(NSInteger)threads prepareHiFT:(BOOL)prepareHiFT resident:(Graph *)resident lowPrecisionHiFT:(BOOL)lowHiFT;
 + (NSDictionary<NSString *, id> *)runAtDirectory:(NSString *)directory text:(nullable NSString *)text lowPrecisionFlow:(BOOL)lowPrecision optimized:(BOOL)optimized cpuThreads:(NSInteger)threads prepareHiFT:(BOOL)prepareHiFT resident:(Graph *)resident lowPrecisionHiFT:(BOOL)lowHiFT preparedSpeech:(const std::vector<int> *)prepared reuseLlm:(LlmOwner *)reusable;
++ (NSDictionary<NSString *, id> *)runAtDirectory:(NSString *)directory text:(nullable NSString *)text lowPrecisionFlow:(BOOL)lowPrecision optimized:(BOOL)optimized cpuThreads:(NSInteger)threads prepareHiFT:(BOOL)prepareHiFT resident:(Graph *)resident lowPrecisionHiFT:(BOOL)lowHiFT preparedSpeech:(const std::vector<int> *)prepared reuseLlm:(LlmOwner *)reusable flowW8:(BOOL)useW8;
 @end
 
 @implementation CosyVoiceGenerate
@@ -557,6 +585,9 @@ bool writeWav(const std::vector<float> &samples, NSString *fileName = @"last-gen
 + (NSDictionary<NSString *, id> *)generateText:(NSString *)text atDirectory:(NSString *)directory optimized:(BOOL)optimized cpuThreads:(NSInteger)threads lowPrecisionHiFT:(BOOL)low {
     return [self runAtDirectory:directory text:text lowPrecisionFlow:NO optimized:optimized cpuThreads:threads prepareHiFT:NO resident:nullptr lowPrecisionHiFT:low];
 }
++ (NSDictionary<NSString *, id> *)generateText:(NSString *)text atDirectory:(NSString *)directory optimized:(BOOL)optimized cpuThreads:(NSInteger)threads lowPrecisionHiFT:(BOOL)low flowW8:(BOOL)useW8 {
+    return [self runAtDirectory:directory text:text lowPrecisionFlow:NO optimized:optimized cpuThreads:threads prepareHiFT:NO resident:nullptr lowPrecisionHiFT:low preparedSpeech:nullptr reuseLlm:nullptr flowW8:useW8];
+}
 
 + (NSDictionary<NSString *, id> *)runAtDirectory:(NSString *)directory text:(nullable NSString *)text lowPrecisionFlow:(BOOL)lowPrecision optimized:(BOOL)optimized cpuThreads:(NSInteger)threads {
     return [self runAtDirectory:directory text:text lowPrecisionFlow:lowPrecision optimized:optimized cpuThreads:threads prepareHiFT:NO];
@@ -575,13 +606,18 @@ bool writeWav(const std::vector<float> &samples, NSString *fileName = @"last-gen
 }
 
 + (NSDictionary<NSString *, id> *)runAtDirectory:(NSString *)directory text:(nullable NSString *)text lowPrecisionFlow:(BOOL)lowPrecision optimized:(BOOL)optimized cpuThreads:(NSInteger)threads prepareHiFT:(BOOL)prepareHiFT resident:(Graph *)resident lowPrecisionHiFT:(BOOL)lowHiFT preparedSpeech:(const std::vector<int> *)prepared reuseLlm:(LlmOwner *)reusable {
+    return [self runAtDirectory:directory text:text lowPrecisionFlow:lowPrecision optimized:optimized cpuThreads:threads prepareHiFT:prepareHiFT resident:resident lowPrecisionHiFT:lowHiFT preparedSpeech:prepared reuseLlm:reusable flowW8:NO];
+}
+
++ (NSDictionary<NSString *, id> *)runAtDirectory:(NSString *)directory text:(nullable NSString *)text lowPrecisionFlow:(BOOL)lowPrecision optimized:(BOOL)optimized cpuThreads:(NSInteger)threads prepareHiFT:(BOOL)prepareHiFT resident:(Graph *)resident lowPrecisionHiFT:(BOOL)lowHiFT preparedSpeech:(const std::vector<int> *)prepared reuseLlm:(LlmOwner *)reusable flowW8:(BOOL)requestedW8 {
     @autoreleasepool {
         Trace trace(prepareHiFT ? @"last-hift-precision.log" : @"last-generation.log");
         std::unique_ptr<MemorySampler> sampling;
         sampling.reset(new MemorySampler()); trace.sampler=sampling.get();
         if (resident) resident->traceLog=&trace;
         const int cpuThreads = std::clamp(int(threads),2,4);
-        NSString *flowLabel = lowPrecision ? @"Flow CPU Low" : @"Flow CPU High";
+        const bool useW8=requestedW8||(resident&&resident->flowW8);
+        NSString *flowLabel = useW8 ? @"Flow FFN W8/block64 CPU High/Memory Low" : (lowPrecision ? @"Flow CPU Low" : @"Flow CPU High");
         const bool textGeneration = text != nil;
         trace.record([NSString stringWithFormat:@"HiFT配置：F0=High，core=%@；Flow精度不随HiFT变化；20ms采样/最低余量800 MB",lowHiFT?@"Low":@"High"], true);
         trace.record([NSString stringWithFormat:@"开始：%@ → Conditioner CPU High → %@ → HiFT F0 High/core %@；串行生成 WAV",
@@ -589,6 +625,12 @@ bool writeWav(const std::vector<float> &samples, NSString *fileName = @"last-gen
                       (prepared ? @"本小批已正常EOS的speech token（本次不重跑LLM）" : (textGeneration ? @"当前文字→手机 LLM" : @"固定 25 个 PC speech token（不运行手机文字 LLM）")), flowLabel,lowHiFT?@"Low":@"High"]);
         trace.record([NSString stringWithFormat:@"运行参数：%d CPU 线程；%@；模型精度和两步 Flow 不变",
                       cpuThreads, optimized ? @"优化候选（Flow 32 帧对齐、DSP 查表）" : @"v0.4.1 基线"]);
+        NSDictionary *flowIdentity=resident?resident->flowIdentity:nil;
+        if(useW8) {
+            if(lowPrecision||reusable){return result(false,@"W8整链仅支持Flow High和阶段串行，未开放LLM共驻",trace);}
+            if(!flowIdentity) {NSString *failure=nil;flowIdentity=verifyFlowW8(directory,trace,&failure);if(!flowIdentity)return result(false,failure?:@"W8身份检查失败",trace);}
+            trace.record(@"Flow只量化44个FFN线性层，High精度/Memory Low动态整数；其余层不变，无自动原版回退");
+        }
         if(resident && !prepared)trace.record(@"完整常驻入口：真实当前文字，每句重新prefill；唯一384帧Flow复用，最多105 speech token/4.2秒；LLM释放后才运行HiFT");
         if(resident && prepared)trace.record(@"两句小批声学入口：LLM已经释放；仅完整EOS token进入唯一384帧Flow；F0/HiFT逐句运行");
         if (textGeneration) {
@@ -696,7 +738,9 @@ bool writeWav(const std::vector<float> &samples, NSString *fileName = @"last-gen
             if(!resident)owned.reset(new Graph(cpuThreads,optimized));
             Graph &flow=resident?*resident:*owned;
             if (!resident) {
-            if (!flow.open([directory stringByAppendingPathComponent:@"flow.cfg-student-2step.batch1.fp16.mnn"], false, trace, flowLabel, lowPrecision))
+            NSString *flowFile=useW8?flowIdentity[@"files"][@"candidateGraph"][@"file"]:@"flow.cfg-student-2step.batch1.fp16.mnn";
+            flow.flowW8=useW8;flow.flowIdentity=flowIdentity;
+            if (!flow.open([directory stringByAppendingPathComponent:flowFile], false, trace, flowLabel, lowPrecision))
                 return result(false, @"Flow 会话失败", trace);
             if (!(flow.shape("x", {1, 80, flowFrames}) && flow.shape("mask", {1, 1, flowFrames}) &&
                   flow.shape("mu", {1, 80, flowFrames}) && flow.shape("spks", {1, 80}) &&
@@ -911,6 +955,11 @@ bool writeWav(const std::vector<float> &samples, NSString *fileName = @"last-gen
         completed[@"eosSource"] = prepared ? @"prepared-complete-LLM-output" : (textGeneration ? @"current-LLM-request" : @"fixed-prefix-fixture-not-verified");
         completed[@"llmMetrics"] = llmMetrics;
         completed[@"llmHeldForFlow"] = @(llmHeldForFlow);
+        completed[@"flowQuantization"]=useW8?@"FFN W8/block64":@"original FP16-stored";
+        completed[@"flowPrecision"]=lowPrecision?@"Low":@"High";completed[@"flowMemory"]=@"Low";
+        completed[@"flowSteps"]=@2;completed[@"llmHeadPruned"]=@NO;
+        completed[@"speechTokenSHA256"]=dataSHA256([NSData dataWithBytes:speech.data() length:speech.size()*sizeof(int)]);
+        if(flowIdentity)completed[@"flowIdentity"]=flowIdentity;
         completed[@"stageSeconds"] = stageSeconds;
         completed[@"stageSecondsScope"] = @"partial acoustic breakdown; total generationSeconds additionally includes LLM, input loading, waits and WAV writing; retained Flow setup is in outer call";
         return completed;
