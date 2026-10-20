@@ -82,13 +82,11 @@ struct ContentView: View {
                     Button("当前路线返回后停止") { experiments.stop() }
                         .disabled(!experiments.isRunning)
                     Text(experiments.status).font(.caption).textSelection(.enabled)
-                    Text("W8新测试：导入flow-ffn-w8-g64.mnn、同名.weight和flow-w8-fixtures.f32.bin三个文件（约587MB），原17个文件不变。冷启动分别点①原版五条参考→②普通内存→③低内存整数；每项只加载一个Flow，不是整链生成。")
+                    Text("④先做CPU热点并保存384帧参考，冷启动后再做⑤Metal High。复用已导入的W8模型和flow-w8-fixtures.f32.bin，不需新权重；每项只有一个Flow，无LLM/HiFT。")
                         .font(.caption).foregroundStyle(.secondary)
-                    Text("W8两组都用High精度。普通内存优先检查权重量化误差；低内存组再测整数路径的额外误差/内存/速度。每条首次和两次预热分开，5条均来自独立验证集。数值通过不代表音质验收；只需分享同一个统一报告。")
+                    Text("CPU热点只收集标量计时，不读中间大张量。回调耗时包含诊断开销，不作为生产速度排名；普通两步另计。所有结果自动汇入同一份报告。")
                         .font(.caption).foregroundStyle(.secondary)
-                    Text("每项分别冷启动，按①CPU384→②GPU384→③CPU512→④GPU512测。GPU只读取匹配的CPU结果，不再等待GPU回收后加载CPU。512帧是重复token容量负载，不生成音频。")
-                        .font(.caption).foregroundStyle(.secondary)
-                    Text("每步必须完成22层注意力回传；前向前余量1100 MB，20ms采样底线800 MB。先验证有限值、CPU偏差和模块速度；整链RTF与试听尚待验证。")
+                    Text("Metal用High避免重复旧Low溢出路线，但内存仍可能不够。先验有限值、CPU偏差和模块速度，通过后才能考虑整链；不会自动切换默认CPU。")
                         .font(.caption).foregroundStyle(.secondary)
                   }
                 }
@@ -104,7 +102,7 @@ struct ContentView: View {
                     }
                     Text("生成仍用完整EOS、Flow High两步与HiFT Low；800MB底线不变。预加载只是播放策略，不开启全模型常驻。")
                         .font(.caption).foregroundStyle(.secondary)
-                    Text("输出头配对按钮自动用固定五句、全部生成后播放。两边均用Flow W8、相同seed和speech/EOS范围，逐句独立LLM；它们与默认的批内复用路线调度不同，不直接归因比较。原17个文件与W8模型保留；另需llm-speech-head.mnn和同名.weight两个文件，约208MB。")
+                    Text("A/B/C自动用相同五句、全部生成后播放；A/B逐句独立LLM，C三句批内复用，每句仍清KV/重置seed。比较B和C才能判断复用收益。原模型、两个约208MB裁剪候选文件全部保留。")
                         .font(.caption).foregroundStyle(.secondary)
                 }
                 Section("统一测试报告 · 只发这一个") {
@@ -114,7 +112,7 @@ struct ContentView: View {
                         .font(.caption).foregroundStyle(.secondary)
                 }
                 Section("播放与日志") {
-                    ForEach([("end-to-end-original.wav", "原版整链"), ("end-to-end-flow-w8.wav", "Flow W8整链"), ("end-to-end-head-full.wav", "输出头配对A · 完整头"), ("end-to-end-head-reduced.wav", "输出头配对B · 裁剪头")], id: \.0) { item in
+                    ForEach([("end-to-end-original.wav", "原版整链"), ("end-to-end-flow-w8.wav", "Flow W8整链"), ("end-to-end-head-full.wav", "输出头配对A · 完整头"), ("end-to-end-head-reduced.wav", "输出头配对B · 裁剪头"), ("end-to-end-head-reuse.wav", "输出头配对C · 批内复用")], id: \.0) { item in
                         let url = SentenceStream.documents.appendingPathComponent(item.0)
                         if exists(url) {
                             Button("试听最近成功：\(item.1)") { play(url) }.disabled(busy)

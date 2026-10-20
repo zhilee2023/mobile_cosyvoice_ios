@@ -26,7 +26,7 @@ final class ExperimentRunner: ObservableObject {
                 status = "\(index + 1)/\(routes.count)：\(title)；请保持前台。当前路线返回后才可停止。"
                 record(status)
                 let runID = DiagnosticReport.begin(kind: "module-experiment", label: title,
-                    parameters: ["route": route, "wholeChainRTFMeasured": false, "diagnosticOnly": route == "flow-metal-nan"],
+                    parameters: ["route": route, "wholeChainRTFMeasured": false, "diagnosticOnly": route == "flow-metal-nan" || route == "flow-w8-profile"],
                     sources: ["last-experiment-\(route).json", "last-experiment-\(route).log"])
                 let result: [String: Any] = await withCheckedContinuation { continuation in
                     worker.async { continuation.resume(returning: CosyVoiceGenerate.runExperiment(route, atDirectory: directory)) }
@@ -35,7 +35,7 @@ final class ExperimentRunner: ObservableObject {
                 let diagnostic = result["diagnosticOnly"] as? Bool == true
                 let message = result["message"] as? String ?? "无结果"
                 DiagnosticReport.finish(runID, state: diagnostic ? (passed ? "diagnostic-completed" : "diagnostic-stopped") : (passed ? "passed" : "not-passed"), result: result)
-                let status = diagnostic ? (passed ? "诊断已完成，数值尚未修复" : "诊断提前停止") : (passed ? "本路线门槛通过" : "未全部通过/未运行，请看分组数据")
+                let status = diagnostic ? (passed ? "诊断已完成，非整链速度/音质验收" : "诊断提前停止") : (passed ? "本路线门槛通过" : "未全部通过/未运行，请看分组数据")
                 record(String(format: "%@：%@；%@；采样峰值%.0f MB，最低可用%.0f MB；耗时%.3f秒。", title, status, message, result["peakFootprintMB"] as? Double ?? 0, result["minAvailableMB"] as? Double ?? 0, result["wallSeconds"] as? Double ?? 0))
                 completed += 1
             }

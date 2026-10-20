@@ -3,7 +3,7 @@
 + (NSDictionary<NSString *, id> *)runExperiment:(NSString *)route atDirectory:(NSString *)directory {
     @autoreleasepool {
         NSSet *allowed = [NSSet setWithArray:@[@"flow-buckets",@"flow-threads",@"flow-thread-4",@"flow-thread-2",@"flow-thread-3",@"flow-bf16",@"llm-reuse",@"llm-threads",@"hift-threads",@"flow-metal-low-256",@"flow-metal-low-384",@"flow-metal-nan",@"flow-metal-hybrid-256",@"flow-metal-hybrid-384",@"flow-metal-hybrid-512",@"flow-cpu-reference-384",@"flow-cpu-reference-512"]];
-        if (![allowed containsObject:route] && ![@[@"flow-w8-reference",@"flow-w8-normal",@"flow-w8-low"] containsObject:route]) return @{@"success":@NO,@"message":@"未知试验路线"};
+        if (![allowed containsObject:route] && ![@[@"flow-w8-reference",@"flow-w8-normal",@"flow-w8-low",@"flow-w8-profile",@"flow-w8-metal-high"] containsObject:route]) return @{@"success":@NO,@"message":@"未知试验路线"};
         Trace trace([NSString stringWithFormat:@"last-experiment-%@.log",route]);
         MemorySampler allMemory; trace.sampler=&allMemory;
         NSMutableArray *rows=[NSMutableArray array];
@@ -15,7 +15,7 @@
             summary[@"route"]=route; summary[@"rows"]=rows;
             summary[@"wholeChainRTFMeasured"]=@NO;
             summary[@"automaticPromotion"]=@NO;
-            summary[@"diagnosticOnly"]=@([route isEqual:@"flow-metal-nan"]);
+            summary[@"diagnosticOnly"]=@([route isEqual:@"flow-metal-nan"]||[route isEqual:@"flow-w8-profile"]);
             if ([route isEqual:@"flow-metal-nan"]) summary[@"numericalInferencePassed"]=@NO;
             summary[@"version"]=[NSBundle.mainBundle objectForInfoDictionaryKey:@"CFBundleShortVersionString"]?:@"unknown";
             summary[@"build"]=[NSBundle.mainBundle objectForInfoDictionaryKey:@"CFBundleVersion"]?:@"unknown";
@@ -37,6 +37,7 @@
         };
         if(!waitAvailable(2900000000ULL,trace,@"独立路线启动前"))return finish(false,@"初始余量不足，请冷启动后单独测本路线");
 #include "CosyVoiceFlowW8Experiment.inc"
+#include "CosyVoiceFlowProfile.inc"
 
         std::vector<int> prompt;
         NSString *csv=[NSString stringWithContentsOfFile:[directory stringByAppendingPathComponent:@"prompt-speech-tokens.csv"] encoding:NSUTF8StringEncoding error:nil];
@@ -176,7 +177,7 @@
                 if(!flow.open([directory stringByAppendingPathComponent:@"flow.cfg-student-2step.batch1.fp16.mnn"],false,trace,variant.bf16?@"Flow请求BF16":@"Flow High",false,variant.bf16)||
                     !(flow.shape("x",{1,80,n})&&flow.shape("mu",{1,80,n})&&flow.shape("cond",{1,80,n})&&flow.shape("mask",{1,1,n})&&flow.shape("spks",{1,80})&&flow.shape("t",{1})))return finish(false,@"Flow输入会话失败");
                 flow.net->resizeSession(flow.session);flow.releaseModel();setup=secondsSince(started);
-                flow.net->getSessionInfo(flow.session,MNN::Interpreter::BACKENDS,&backend);
+                backend=flow.mainBackend();
                 flow.net->getSessionInfo(flow.session,MNN::Interpreter::THREAD_NUMBER,&actualThreads);
                 trace.record([NSString stringWithFormat:@"Flow %d帧 %d线程 %@；setup %.3f秒；主backend=%d；BF16编译启用，但逐算子可回退，不能声称全图BF16",n,variant.threads,variant.bf16?@"BF16请求":@"High",setup,backend]);
                 if(variant.bf16&&backend!=13)allSupported=false;

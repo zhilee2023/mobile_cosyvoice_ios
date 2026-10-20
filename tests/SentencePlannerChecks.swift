@@ -44,13 +44,14 @@ struct SentencePlannerChecks {
         precondition(LongTextBenchmarks.batchLimit("three-sentence-staged") == 3)
         precondition(LongTextBenchmarks.batchLimit("six-sentence-staged") == 6)
         precondition(LongTextBenchmarks.batchLimit(nil) == 0)
-        for mode in ["three-sentence-staged-w8", "three-sentence-staged-w8-head-full", "three-sentence-staged-w8-head-reduced"] {
+        for mode in ["three-sentence-staged-w8", "three-sentence-staged-w8-head-full", "three-sentence-staged-w8-head-reduced", "three-sentence-staged-w8-head-reduced-reuse"] {
             precondition(LongTextBenchmarks.batchLimit(mode) == 3 && LongTextBenchmarks.usesW8(mode))
             precondition(LongTextBenchmarks.audioArchiveName(mode) != nil)
         }
         precondition(LongTextBenchmarks.headMode("three-sentence-staged-w8") == nil)
         precondition(LongTextBenchmarks.headMode("three-sentence-staged-w8-head-full") == "full")
         precondition(LongTextBenchmarks.headMode("three-sentence-staged-w8-head-reduced") == "reduced")
+        precondition(LongTextBenchmarks.headMode("three-sentence-staged-w8-head-reduced-reuse") == "reduced")
         precondition(!LongTextBenchmarks.usesW8("unknown"))
         print("PASS: sentence splitting preserves content, bounds UTF-16, handles emoji/newlines/decimals/retry limits")
     }

@@ -67,7 +67,7 @@ if ([@[@"flow-w8-reference",@"flow-w8-normal",@"flow-w8-low"] containsObject:rou
         const double loadSeconds=secondsSince(started);
         if(!sampledBudgetOK(trace)){failure=@"会话创建后触发800MB内存保护";return false;}
         int backend=-1,threads=-1;
-        flow.net->getSessionInfo(flow.session,MNN::Interpreter::BACKENDS,&backend);
+        backend=flow.mainBackend();
         flow.net->getSessionInfo(flow.session,MNN::Interpreter::THREAD_NUMBER,&threads);
         if(backend!=MNN_FORWARD_CPU || threads!=4){failure=@"CPU后端或4线程设置未生效";return false;}
         for(NSDictionary *entry in cases) {

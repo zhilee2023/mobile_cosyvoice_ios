@@ -164,7 +164,9 @@ NSDictionary<NSString *, id> *probeLargeSession(NSString *directory, ProbeMode m
         checkpoint(stats, [@"会话已创建；开始设置真实测试形状：" stringByAppendingString:label]);
         int pipelineBackend = -1;
         if (metal) {
-            interpreter->getSessionInfo(session, MNN::Interpreter::BACKENDS, &pipelineBackend);
+            int backends[2]={-1,-1}; // one schedule config + backup slot
+            interpreter->getSessionInfo(session, MNN::Interpreter::BACKENDS, backends);
+            pipelineBackend=backends[0];
             checkpoint(stats, [NSString stringWithFormat:@"主 pipeline backend=%d（Metal=%d；不代表逐算子全部在GPU）",
                                pipelineBackend, int(MNN_FORWARD_METAL)]);
             if (pipelineBackend != MNN_FORWARD_METAL) {

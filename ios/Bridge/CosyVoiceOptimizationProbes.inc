@@ -36,7 +36,7 @@
                     return finish(false, @"HiFT core对照输入形状失败");
                 auto begin = std::chrono::steady_clock::now();
                 core.net->resizeSession(core.session); core.releaseModel();
-                int backend=-1; core.net->getSessionInfo(core.session, MNN::Interpreter::BACKENDS, &backend);
+                int backend=core.mainBackend();
                 trace.record([NSString stringWithFormat:@"%@ resize %.3f 秒；主backend=%d（Low可能为CPU Extension）", label, secondsSince(begin), backend]);
                 if (os_proc_available_memory() < 1000000000ULL) return finish(false, @"HiFT resize后可用内存不足1000 MB");
                 for (int run=0;run<3;++run) {

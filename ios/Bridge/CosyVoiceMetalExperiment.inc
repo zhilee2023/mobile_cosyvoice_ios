@@ -104,7 +104,7 @@ if ([route hasPrefix:@"flow-metal-low-"] || [route hasPrefix:@"flow-metal-hybrid
             if (!flow.open(flowPath, metal, trace, label, metal, false, metal)) { row[@"status"] = @"session-failed"; return false; }
             row[@"loadCreateSeconds"] = @(secondsSince(started));
             int backend = -1;
-            flow.net->getSessionInfo(flow.session, MNN::Interpreter::BACKENDS, &backend);
+            backend=flow.mainBackend();
             row[@"backend"] = @(backend);
             trace.record([NSString stringWithFormat:@"%@ 主backend=%d（Metal=1，CPU=0；逐算子可能回退）", label, backend]);
             if ((metal && backend != MNN_FORWARD_METAL) || (!metal && backend != MNN_FORWARD_CPU)) {

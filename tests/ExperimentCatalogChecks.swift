@@ -10,8 +10,8 @@ struct ExperimentCatalogChecks {
             "llm-chain-reuse", "two-sentence-staged", "six-sentence-staged", "flow-metal-low-memory-256", "flow-metal-low-256", "flow-metal-low-384", "flow-metal-nan", "flow-metal-hybrid-256",
             "flow-w8-reference", "flow-w8-normal", "flow-w8-low", "flow-cpu-reference-384", "flow-metal-hybrid-384", "flow-cpu-reference-512", "flow-metal-hybrid-512"]
         precondition(Set(ExperimentCatalog.archived.map(\.id)) == concluded)
-        precondition(ExperimentCatalog.available.filter { $0.execution == .sentence }.map(\.id) == ["three-sentence-staged", "three-sentence-staged-w8", "three-sentence-staged-w8-head-full", "three-sentence-staged-w8-head-reduced"])
-        precondition(ExperimentCatalog.available.filter { $0.execution == .module }.isEmpty)
+        precondition(ExperimentCatalog.available.filter { $0.execution == .sentence }.map(\.id) == ["three-sentence-staged", "three-sentence-staged-w8", "three-sentence-staged-w8-head-full", "three-sentence-staged-w8-head-reduced", "three-sentence-staged-w8-head-reduced-reuse"])
+        precondition(ExperimentCatalog.available.filter { $0.execution == .module }.map(\.id) == ["flow-w8-profile", "flow-w8-metal-high"])
         precondition(ExperimentCatalog.planned.isEmpty)
         precondition(ExperimentCatalog.defaultThreads == 4)
         precondition(routes.allSatisfy { !$0.conclusion.isEmpty })

@@ -36,6 +36,18 @@ SEED_PATCH = '''    // Isolated A/B uses the same seed. No key => original rando
     }
 ''' + SEED_ANCHOR
 
+# reset() is the explicit NEW-request boundary used by our bridge. Rebuild
+# only the lightweight sampler; the loaded transformer/module stays alive.
+# generate(vector) does not call generate_init(), so patching that is wrong.
+RESET_ANCHOR = "    mCachedPromptText.clear();\n}"
+RESET_PATCH = RESET_ANCHOR[:-1] + '''
+    // COSYVOICE_HEAD_REQUEST_RESET_V1: opt-in; refresh RNG/pipeline, not weights.
+    if (!mConfig->config_.value("cosyvoice_head_experiment", std::string("")).empty()
+            && mConfig->config_.contains("cosyvoice_experiment_seed")) {
+        mSampler.reset(Sampler::createSampler(mContext, mConfig));
+    }
+}'''
+
 
 def patch_text(text: str, anchor: str, replacement: str) -> str:
     if text.count(anchor) != 1 or replacement in text:
@@ -50,6 +62,7 @@ def main():
     src = args.mnn / "transformers/llm/engine/src"
     llm_path, sampler_path = src / "llm.cpp", src / "sampler.cpp"
     llm = patch_text(llm_path.read_text(encoding="utf-8"), SAMPLE_ANCHOR, SAMPLE_PATCH)
+    llm = patch_text(llm, RESET_ANCHOR, RESET_PATCH)
     llm = '#include "CosyVoiceSpeechHead.hpp"\n' + llm
     sampler = patch_text(sampler_path.read_text(encoding="utf-8"), SEED_ANCHOR, SEED_PATCH)
     # No writes until every anchor has been validated.

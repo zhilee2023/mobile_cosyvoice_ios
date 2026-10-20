@@ -6,6 +6,7 @@
 #include "CosyVoiceBudget.hpp"
 #include "CosyVoiceFailure.hpp"
 #include "CosyVoiceFlowW8.hpp"
+#include "CosyVoiceOpProfile.hpp"
 #import <MNN/Interpreter.hpp>
 #import <MNN/llm/llm.hpp>
 #import <mach/mach.h>
@@ -255,12 +256,12 @@ bool generateSpeechTokens(NSString *directory, NSString *text, const std::vector
         [config removeObjectForKey:@"cosyvoice_head_experiment"];
         [config removeObjectForKey:@"cosyvoice_experiment_seed"];
         if(headExperiment) {
-            if((![headExperiment isEqual:@"full"]&&![headExperiment isEqual:@"reduced"])||reusable) {
-                *failure=@"输出头配对实验必须逐句使用独立LLM";return false;
+            if(![headExperiment isEqual:@"full"]&&![headExperiment isEqual:@"reduced"]) {
+                *failure=@"未知输出头模式";return false;
             }
             config[@"cosyvoice_head_experiment"]=headExperiment;
             config[@"cosyvoice_experiment_seed"]=@(experimentSeed);
-            trace.record([NSString stringWithFormat:@"输出头端到端实验 %@；双方仅允许speech/EOS并恢复全局编号；seed=%d；每句独立LLM、原始mixed采样",headExperiment,experimentSeed]);
+            trace.record([NSString stringWithFormat:@"输出头端到端实验 %@；仅允许speech/EOS并恢复全局编号；seed=%d；%@、原始mixed采样",headExperiment,experimentSeed,reusable?@"批内复用权重/每句清KV和重置采样器":@"每句独立LLM"]);
         }
         // MNN 3.6.1 uses base_dir + filename verbatim; absolute filenames here
         // would duplicate the directory. Metadata and embedding need the same
@@ -319,7 +320,13 @@ bool generateSpeechTokens(NSString *directory, NSString *text, const std::vector
             return false;
         }
         double loadSeconds = needsLoad ? secondsSince(started) : 0;
-        if (reusable) llm->reset(); // Same model, NEW request/KV; never append sentences to old KV.
+        if (headExperiment) {
+            // Update seed BEFORE reset: patched reset recreates only the MNN
+            // mixed sampler. Even a reused model starts the same request RNG.
+            NSString *seedConfig=[NSString stringWithFormat:@"{\"cosyvoice_experiment_seed\":%d}",experimentSeed];
+            if(!llm->set_config(seedConfig.UTF8String)){*failure=@"更新逐句采样seed失败";return false;}
+        }
+        if (reusable || headExperiment) llm->reset(); // NEW request/KV, never append sentences.
         if (metrics) { metrics[@"loadSeconds"]=@(loadSeconds); metrics[@"reused"]=@(!needsLoad); }
         trace.record([NSString stringWithFormat:@"LLM 加载完成 %.3f 秒；%@", loadSeconds, reusable ? @"复用路线：本句已reset KV（是否跨声学保留由实际调度决定）" : @"本句独立实例"]);
         std::string userContent = "You are a helpful assistant.<|endofprompt|>希望你以后能够做的比我还好呀。";
@@ -430,12 +437,13 @@ struct Graph {
     Graph(const Graph &) = delete;
     Graph &operator=(const Graph &) = delete;
     explicit Graph(int threads = 4, bool fast = false) : cpuThreads(threads), performance(fast) {}
-    bool open(NSString *path, bool metal, Trace &trace, NSString *name, bool lowPrecision = false, bool bf16 = false, bool noTune = false, bool normalMemory = false) {
+    bool open(NSString *path, bool metal, Trace &trace, NSString *name, bool lowPrecision = false, bool bf16 = false, bool noTune = false, bool normalMemory = false, bool profile = false) {
         traceLog = &trace;
         auto started = std::chrono::steady_clock::now();
         net.reset(MNN::Interpreter::createFromFile(path.fileSystemRepresentation));
         trace.record([NSString stringWithFormat:@"%@ 图读取 %.3f 秒", name, secondsSince(started)]);
         if (!net) return false;
+        if(profile)net->setSessionMode(MNN::Interpreter::Session_Debug);
         MNN::BackendConfig backend;
         backend.precision = lowPrecision ? MNN::BackendConfig::Precision_Low : MNN::BackendConfig::Precision_High;
         if (bf16) backend.precision = MNN::BackendConfig::Precision_Low_BF16;
@@ -522,6 +530,12 @@ struct Graph {
         auto code = net->runSession(session);
         if (code != MNN::NO_ERROR) traceLog->record([NSString stringWithFormat:@"runSession 返回错误 %d", int(code)]);
         return code == MNN::NO_ERROR;
+    }
+    int mainBackend() const {
+        // MNN requires 1 + config count ints, not a pointer to one scalar.
+        // Every Graph here creates exactly one ScheduleConfig.
+        int backends[2]={-1,-1};
+        return net->getSessionInfo(session,MNN::Interpreter::BACKENDS,backends)?backends[0]:-1;
     }
     void releaseModel() { net->releaseModel(); }
 };

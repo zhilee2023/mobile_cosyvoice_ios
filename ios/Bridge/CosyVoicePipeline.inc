@@ -7,6 +7,7 @@ struct PipelineLlmOwner : LlmOwner {
     NSString *_mode;
     BOOL _useW8;
     NSString *_headMode;
+    BOOL _reuseHead;
     NSDictionary *_flowIdentity;
     NSDictionary *_headIdentity;
     PipelineLlmOwner _llm;
@@ -26,13 +27,14 @@ struct PipelineLlmOwner : LlmOwner {
     @autoreleasepool {
         Trace trace(@"last-pipeline-lifecycle.log"); MemorySampler sampler; trace.sampler=&sampler;
         trace.record([NSString stringWithFormat:@"新整链对照 %@；4线程/Flow High两步/20ms采样；未获长文验收",mode],true);
-        if (![@[@"llm-chain-reuse",@"two-sentence-staged",@"three-sentence-staged",@"six-sentence-staged",@"three-sentence-staged-w8",@"three-sentence-staged-w8-head-full",@"three-sentence-staged-w8-head-reduced"] containsObject:mode])
+        if (![@[@"llm-chain-reuse",@"two-sentence-staged",@"three-sentence-staged",@"six-sentence-staged",@"three-sentence-staged-w8",@"three-sentence-staged-w8-head-full",@"three-sentence-staged-w8-head-reduced",@"three-sentence-staged-w8-head-reduced-reuse"] containsObject:mode])
             return result(false,@"未知完整链路实验",trace);
         if (!waitAvailable(2900000000ULL,trace,@"对照启动前")) return result(false,@"初始余量不足；未加载候选模型",trace);
         CosyVoicePipeline *owner=[CosyVoicePipeline new];
         owner->_directory=[directory copy]; owner->_mode=[mode copy];
         owner->_useW8=[mode hasPrefix:@"three-sentence-staged-w8"];
-        owner->_headMode=[mode hasSuffix:@"-head-full"]?@"full":([mode hasSuffix:@"-head-reduced"]?@"reduced":nil);
+        owner->_reuseHead=[mode isEqual:@"three-sentence-staged-w8-head-reduced-reuse"];
+        owner->_headMode=[mode hasSuffix:@"-head-full"]?@"full":([mode hasSuffix:@"-head-reduced"]||owner->_reuseHead?@"reduced":nil);
         NSString *failure=nil;
         if(owner->_useW8) {
             owner->_flowIdentity=verifyFlowW8(directory,trace,&failure);
@@ -41,7 +43,7 @@ struct PipelineLlmOwner : LlmOwner {
         if(owner->_headMode) {
             owner->_headIdentity=verifySpeechHead(directory,trace,&failure);
             if(!owner->_headIdentity)return result(false,failure?:@"词表裁剪候选身份检查失败",trace);
-            trace.record(@"输出头端到端配对：每句独立LLM、逐句相同seed；完整头/裁剪头均限制speech/EOS；input embedding/tokenizer不裁剪；不与默认mixed路线直接归因比较");
+            trace.record(owner->_reuseHead?@"裁剪头批内复用：每句清KV并重置相同seed采样器；每批最多3句token，释放LLM后才加载Flow；无全模型共驻":@"输出头端到端配对：每句独立LLM、逐句相同seed；完整头/裁剪头均限制speech/EOS；input embedding/tokenizer不裁剪；不与默认mixed路线直接归因比较");
         }
         NSMutableDictionary *out=[result(true,@"本批调度器已创建；模型按阶段加载，无隐藏会话池",trace) mutableCopy];
         out[@"session"]=owner; return out;
@@ -89,13 +91,13 @@ struct PipelineLlmOwner : LlmOwner {
         for(NSUInteger index=0;index<texts.count;++index) {
             std::vector<int> speech; NSString *failure=nil; bool limit=false;
             NSMutableDictionary *llmMetrics = [NSMutableDictionary dictionary];
-            ++_requests; if(_llm)++_reusedRequests;
+            const bool reusedLlm=bool(_llm);
+            ++_requests; if(reusedLlm)++_reusedRequests;
             trace.record([NSString stringWithFormat:@"本小批句%lu/%lu；至多105 speech token，必须正常EOS",(unsigned long)index+1,(unsigned long)texts.count]);
-            // Paired head arms intentionally use a fresh LLM per sentence, so
-            // constructor RNG seeds apply to exactly the corresponding request.
-            // Ordinary generation keeps the established within-batch LLM reuse.
+            // Fresh A/B stays unchanged. Reuse C refreshes the sampler at the
+            // explicit reset boundary, preserving per-request seed semantics.
             const int seed=2307+int(_requests)-1;
-            if(!generateSpeechTokens(_directory,texts[index],prompt,trace,speech,&failure,4,&limit,false,{},false,105,_headMode?nullptr:&_llm,llmMetrics,false,_headMode,seed)) {
+            if(!generateSpeechTokens(_directory,texts[index],prompt,trace,speech,&failure,4,&limit,false,{},false,105,(_headMode&&!_reuseHead)?nullptr:&_llm,llmMetrics,false,_headMode,seed)) {
                 // Strong out-parameter survives the helper's inner pool.
                 trace.record([@"停止：" stringByAppendingString:failure?:@"LLM失败"]);
                 _llm.reset(); _prepared.clear();
@@ -109,7 +111,8 @@ struct PipelineLlmOwner : LlmOwner {
                 NSMutableArray *ids=[NSMutableArray array];for(int token:speech)[ids addObject:@(token)];
                 llmMetrics[@"tokens"]=ids;llmMetrics[@"eosValidated"]=@YES;
                 llmMetrics[@"sampling"]=@"MNN mixed penalty/topK/topP/temperature, repetition_penalty=1.15";
-                llmMetrics[@"llmReused"]=@NO;
+                llmMetrics[@"llmReused"]=@(reusedLlm);
+                llmMetrics[@"samplerResetPerRequest"]=@YES;
             }
             [llmRows addObject:llmMetrics];
             _prepared.push_back(std::move(speech));
@@ -122,6 +125,7 @@ struct PipelineLlmOwner : LlmOwner {
         out[@"llmRequests"] = llmRows;
         out[@"flowQuantization"]=_useW8?@"FFN W8/block64":@"original FP16-stored";
         out[@"headMode"]=_headMode?:@"default-full";
+        out[@"headWeightReuse"] = @(_reuseHead);
         Trace life(@"last-pipeline-lifecycle.log");life.record([NSString stringWithFormat:@"已准备%zu句完整token；LLM已释放，Flow尚未加载；累计LLM请求%lu/复用%lu",_prepared.size(),(unsigned long)_requests,(unsigned long)_reusedRequests]);
         return out;
     }
@@ -171,6 +175,7 @@ struct PipelineLlmOwner : LlmOwner {
         out[@"flowReusedWithinBatch"]=@(reused);out[@"batchSize"]=@(_prepared.size());
         out[@"flowCreateCount"]=@(_flowCreates);out[@"flowReuseCount"]=@(_flowReuses);
         out[@"headMode"]=_headMode?:@"default-full";out[@"llmHeadPruned"]=@([_headMode isEqual:@"reduced"]);
+        out[@"headWeightReuse"] = @(_reuseHead);
         ++_at;
         bool done=![out[@"success"] boolValue] || _at>=_prepared.size();
         Trace life(@"last-pipeline-lifecycle.log");
@@ -191,6 +196,7 @@ struct PipelineLlmOwner : LlmOwner {
     out[@"flowCreates"]=@(_flowCreates);out[@"flowReuses"]=@(_flowReuses);out[@"llmBudgetReleases"]=@(_budgetReleases);
     out[@"flowQuantization"]=_useW8?@"FFN W8/block64":@"original FP16-stored";
     out[@"headMode"]=_headMode?:@"default-full";out[@"llmHeadPruned"]=@([_headMode isEqual:@"reduced"]);
+    out[@"headWeightReuse"] = @(_reuseHead);
     if(_flowIdentity)out[@"flowIdentity"]=_flowIdentity;if(_headIdentity)out[@"headIdentity"]=_headIdentity;
     return out;
 }

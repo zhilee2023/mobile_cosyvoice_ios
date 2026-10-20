@@ -14,6 +14,16 @@ def run(mode):
                       'attempts':[{'phase':'prepare-batch','result':{'llmRequests':requests}}]}}
 
 class HeadReport(unittest.TestCase):
+    def test_reuse_pair_requires_actual_schedule_and_sampler_reset(self):
+        a,b=run('reduced'),run('reduced-reuse')
+        for item,flags in [(a,[False]*5),(b,[False,True,True,False,True])]:
+            for request,flag in zip(item['result']['attempts'][0]['result']['llmRequests'],flags):
+                request['llmReused']=flag;request['samplerResetPerRequest']=True
+        self.assertEqual(compare({'runs':[a,b]},reuse=True)['state'],'matched-complete-tokens')
+        b['result']['attempts'][0]['result']['llmRequests'][2]['llmReused']=False
+        self.assertEqual(compare({'runs':[a,b]},reuse=True)['state'],'reuse-schedule-mismatch')
+        self.assertEqual(compare({'runs':[run('reduced'),run('reduced-reuse')]},reuse=True)['state'],'reuse-schedule-mismatch')
+
     def test_complete_pair(self):
         self.assertEqual(compare({'runs':[run('full'),run('reduced')]})['state'],'matched-complete-tokens')
     def test_failure_or_old_version_not_accepted(self):
