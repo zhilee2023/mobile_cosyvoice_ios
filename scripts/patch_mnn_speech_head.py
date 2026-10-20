@@ -11,13 +11,20 @@ SAMPLE_ANCHOR = "    auto token_id = mSampler->sample(logits);"
 SAMPLE_PATCH = '''    // COSYVOICE_SPEECH_HEAD_EXPERIMENT_V1: opt-in only.
     const auto speechHeadMode = mConfig->config_.value("cosyvoice_head_experiment", std::string(""));
     if (!speechHeadMode.empty()) {
-        if (speechHeadMode != "full" && speechHeadMode != "reduced")
-            throw std::runtime_error("Unknown speech-head experiment mode");
+        if (speechHeadMode != "full" && speechHeadMode != "reduced") {
+            MNN_ERROR("Invalid speech-head experiment mode\\n");
+            mContext->status = LlmStatus::INTERNAL_ERROR;
+            return 0; // valid global embedding ID, NOT EOS; status stops generation
+        }
         const auto info = logits->getInfo();
-        if (!info || info->dim.empty()) throw std::runtime_error("Missing speech-head shape");
         std::vector<float> globalLogits;
-        CosyVoiceSpeechHead::restore(logits->readMap<float>(), info->size,
-            info->dim.back(), speechHeadMode == "reduced", globalLogits);
+        if (!info || info->dim.empty() || !CosyVoiceSpeechHead::restore(
+                logits->readMap<float>(), info->size, info->dim.back(),
+                speechHeadMode == "reduced", globalLogits)) {
+            MNN_ERROR("Speech-head shape/finite validation failed\\n");
+            mContext->status = LlmStatus::INTERNAL_ERROR;
+            return 0;
+        }
         logits = _Const(globalLogits.data(), {CosyVoiceSpeechHead::vocabulary}, NHWC, halide_type_of<float>());
     }
 ''' + SAMPLE_ANCHOR

@@ -62,3 +62,8 @@ sampler path is unchanged; default native generation explicitly removes them.
 Unexpected logits shape/nonfinite data stops the test, with generate exceptions
 reported as failures instead of claiming a completed WAV. CI compiles/tests
 the mapping helper, Swift route/planner checks and the unsigned iOS app.
+
+MNN iOS disables C++ exceptions. The engine adapter therefore returns an
+explicit failure, sets `LlmStatus::INTERNAL_ERROR`, and returns global ID0
+(not EOS). The native caller rejects that status before accepting tokens.
+The mapping helper is compiled/tested with `-fno-exceptions` as well.

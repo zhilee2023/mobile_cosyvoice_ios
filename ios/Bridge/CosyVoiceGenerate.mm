@@ -346,6 +346,10 @@ bool generateSpeechTokens(NSString *directory, NSString *text, const std::vector
         }
         if (!sampledBudgetOK(trace)) { *failure=@"LLM前向期间可用内存或20ms采样低于800 MB，停止"; return false; }
         const auto *context = llm->getContext();
+        if(!context || context->status==MNN::Transformer::LlmStatus::INTERNAL_ERROR) {
+            nativeLog.recordFailure(trace);
+            *failure=@"LLM内部错误（含输出头形状/有限值检查失败），未作为正常EOS或完整音频";return false;
+        }
         const int64_t prefillAfter = context ? context->prefill_us : 0;
         const int64_t decodeAfter = context ? context->decode_us : 0;
         double prefillSeconds = (prefillAfter >= prefillBefore ? prefillAfter-prefillBefore : prefillAfter)/1e6;
