@@ -5,6 +5,7 @@
 #include "CosyVoiceProbeMetrics.hpp"
 #include "CosyVoiceBudget.hpp"
 #include "CosyVoiceFailure.hpp"
+#include "CosyVoiceFlowW8.hpp"
 #import <MNN/Interpreter.hpp>
 #import <MNN/llm/llm.hpp>
 #import <mach/mach.h>
@@ -398,7 +399,7 @@ struct Graph {
     Graph(const Graph &) = delete;
     Graph &operator=(const Graph &) = delete;
     explicit Graph(int threads = 4, bool fast = false) : cpuThreads(threads), performance(fast) {}
-    bool open(NSString *path, bool metal, Trace &trace, NSString *name, bool lowPrecision = false, bool bf16 = false, bool noTune = false) {
+    bool open(NSString *path, bool metal, Trace &trace, NSString *name, bool lowPrecision = false, bool bf16 = false, bool noTune = false, bool normalMemory = false) {
         traceLog = &trace;
         auto started = std::chrono::steady_clock::now();
         net.reset(MNN::Interpreter::createFromFile(path.fileSystemRepresentation));
@@ -407,7 +408,7 @@ struct Graph {
         MNN::BackendConfig backend;
         backend.precision = lowPrecision ? MNN::BackendConfig::Precision_Low : MNN::BackendConfig::Precision_High;
         if (bf16) backend.precision = MNN::BackendConfig::Precision_Low_BF16;
-        backend.memory = MNN::BackendConfig::Memory_Low;
+        backend.memory = normalMemory ? MNN::BackendConfig::Memory_Normal : MNN::BackendConfig::Memory_Low;
         backend.power = performance ? MNN::BackendConfig::Power_High : MNN::BackendConfig::Power_Normal;
         MNN::ScheduleConfig config;
         config.type = metal ? MNN_FORWARD_METAL : MNN_FORWARD_CPU;

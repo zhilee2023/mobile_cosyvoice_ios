@@ -3,7 +3,7 @@ name: Build CosyVoice iOS
 on:
   workflow_dispatch:
   push:
-    branches: [main]
+    branches: [main, codex/flow-w8-phone]
 
 permissions:
   contents: read
@@ -30,6 +30,9 @@ jobs:
           clang++ -fobjc-arc -std=c++17 -Iios/Bridge -framework Foundation tests/failure_lifetime_check.mm -o build-tests/failure-check
           NSZombieEnabled=YES build-tests/failure-check
           python3 -m unittest discover -s tests -p test_report_analysis.py
+          python3 -m unittest discover -s tests -p test_flow_w8_phone.py
+          clang++ -O2 -std=c++17 -Iios/Bridge tests/flow_w8_check.cpp -o build-tests/flow-w8-check
+          build-tests/flow-w8-check
           clang++ -O2 -std=c++17 -Iios/Bridge tests/dsp_check.cpp -o build-tests/dsp-check
           build-tests/dsp-check
           clang++ -O2 -std=c++17 -Iios/Bridge tests/probe_metrics_check.cpp -o build-tests/probe-metrics-check
@@ -89,6 +92,7 @@ jobs:
           assert info['UIFileSharingEnabled'] is True
           assert info['LSSupportsOpeningDocumentsInPlace'] is True
           assert (app / 'model-manifest.json').is_file()
+          assert (app / 'flow-w8-manifest.json').is_file()
           assert not list(app.rglob('*.inc')), 'Bridge includes must not be bundled as resources'
           print('Unsigned app and file sharing verified')
           PY

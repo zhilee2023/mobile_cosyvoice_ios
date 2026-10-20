@@ -13,6 +13,12 @@ enum ExperimentCatalog {
         var execution: Execution = .module
     }
     static let routes: [Route] = [
+        .init(id: "flow-w8-reference", title: "① W8测试 · 原版五条参考", state: .available,
+              conclusion: "先导入W8包三个文件。五条独立冻结输入，CPU High/Memory Normal；保存匹配的真机Mel参考。只测Flow，不运行LLM或HiFT。"),
+        .init(id: "flow-w8-normal", title: "② FFN W8/block64 · 普通内存", state: .available,
+              conclusion: "完成①后冷启动。只量化44个FFN线性层，High精度/Memory Normal；五条输入首次/预热两步与独立CPU参考对照。非整链RTF。"),
+        .init(id: "flow-w8-low", title: "③ FFN W8/block64 · 低内存整数", state: .available,
+              conclusion: "完成①后冷启动。仍是High精度，Memory Low动态整数路径；不是之前NaN的Precision Low。20ms内存采样底线800MB，无自动切换。"),
         .init(id: "flow-buckets", title: "Flow 帧数对照", state: .archived,
               conclusion: "32帧对齐已用于生成；缩小补零能提速，不能显著降低权重内存。"),
         .init(id: "flow-thread-4", title: "Flow 4线程", state: .archived,

@@ -10,7 +10,7 @@ struct ExperimentCatalogChecks {
             "llm-chain-reuse", "two-sentence-staged", "six-sentence-staged", "flow-metal-low-memory-256", "flow-metal-low-256", "flow-metal-low-384", "flow-metal-nan", "flow-metal-hybrid-256"]
         precondition(Set(ExperimentCatalog.archived.map(\.id)) == concluded)
         precondition(ExperimentCatalog.available.filter { $0.execution == .sentence }.map(\.id) == ["three-sentence-staged"])
-        precondition(ExperimentCatalog.available.filter { $0.execution == .module }.map(\.id) == ["flow-cpu-reference-384", "flow-metal-hybrid-384", "flow-cpu-reference-512", "flow-metal-hybrid-512"])
+        precondition(ExperimentCatalog.available.filter { $0.execution == .module }.map(\.id) == ["flow-w8-reference", "flow-w8-normal", "flow-w8-low", "flow-cpu-reference-384", "flow-metal-hybrid-384", "flow-cpu-reference-512", "flow-metal-hybrid-512"])
         precondition(ExperimentCatalog.planned.isEmpty)
         precondition(ExperimentCatalog.defaultThreads == 4)
         precondition(routes.allSatisfy { !$0.conclusion.isEmpty })

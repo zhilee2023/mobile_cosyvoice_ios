@@ -78,6 +78,10 @@ struct ContentView: View {
                     Button("当前路线返回后停止") { experiments.stop() }
                         .disabled(!experiments.isRunning)
                     Text(experiments.status).font(.caption).textSelection(.enabled)
+                    Text("W8新测试：导入flow-ffn-w8-g64.mnn、同名.weight和flow-w8-fixtures.f32.bin三个文件（约587MB），原17个文件不变。冷启动分别点①原版五条参考→②普通内存→③低内存整数；每项只加载一个Flow，不是整链生成。")
+                        .font(.caption).foregroundStyle(.secondary)
+                    Text("W8两组都用High精度。普通内存优先检查权重量化误差；低内存组再测整数路径的额外误差/内存/速度。每条首次和两次预热分开，5条均来自独立验证集。数值通过不代表音质验收；只需分享同一个统一报告。")
+                        .font(.caption).foregroundStyle(.secondary)
                     Text("每项分别冷启动，按①CPU384→②GPU384→③CPU512→④GPU512测。GPU只读取匹配的CPU结果，不再等待GPU回收后加载CPU。512帧是重复token容量负载，不生成音频。")
                         .font(.caption).foregroundStyle(.secondary)
                     Text("每步必须完成22层注意力回传；前向前余量1100 MB，20ms采样底线800 MB。先验证有限值、CPU偏差和模块速度；整链RTF与试听尚待验证。")
