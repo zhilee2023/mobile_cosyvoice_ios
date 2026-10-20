@@ -1,12 +1,16 @@
 // Isolated CPU High Flow test. One model lifetime, five frozen held-out cases.
 // Never touches production LLM/HiFT/model paths, never declares whole-chain RTF.
-if ([@[@"flow-w8-reference",@"flow-w8-normal",@"flow-w8-low"] containsObject:route]) {
-    const bool baseline=[route isEqual:@"flow-w8-reference"], low=[route isEqual:@"flow-w8-low"];
-    NSURL *url=[NSBundle.mainBundle URLForResource:@"flow-w8-manifest" withExtension:@"json"];
+if ([@[@"flow-w8-reference",@"flow-w8-normal",@"flow-w8-low",@"flow-projection-reference",@"flow-projection-candidate"] containsObject:route]) {
+    const bool projection=[route hasPrefix:@"flow-projection-"];
+    const bool baseline=[route isEqual:@"flow-w8-reference"]||[route isEqual:@"flow-projection-reference"], low=projection||[route isEqual:@"flow-w8-low"];
+    NSString *resource=projection?@"flow-projection-manifest":@"flow-w8-manifest";
+    NSString *recipeID=projection?@"cosyvoice3-flow-projection-w8-g64-v1":@"cosyvoice3-flow-ffn-w8-g64-v1";
+    NSString *referenceCache=projection?@"last-success-flow-projection-reference.json":@"last-success-flow-w8-reference.json";
+    NSURL *url=[NSBundle.mainBundle URLForResource:resource withExtension:@"json"];
     NSData *manifestData=url?[NSData dataWithContentsOfURL:url]:nil;
     id parsed=manifestData?[NSJSONSerialization JSONObjectWithData:manifestData options:0 error:nil]:nil;
     NSDictionary *manifest=[parsed isKindOfClass:NSDictionary.class]?parsed:nil;
-    if (![manifest[@"recipe"] isEqual:@"cosyvoice3-flow-ffn-w8-g64-v1"] || ![manifest[@"byteOrder"] isEqual:@"little-endian"])
+    if (![manifest[@"recipe"] isEqual:recipeID] || ![manifest[@"byteOrder"] isEqual:@"little-endian"])
         return finish(false,@"W8测试身份清单缺失或不兼容");
     auto hashData=[](NSData *data)->NSString * {
         unsigned char value[CC_SHA256_DIGEST_LENGTH];CC_SHA256(data.bytes,CC_LONG(data.length),value);
@@ -30,7 +34,7 @@ if ([@[@"flow-w8-reference",@"flow-w8-normal",@"flow-w8-low"] containsObject:rou
         NSString *path=[directory stringByAppendingPathComponent:file];
         NSDictionary *attrs=[NSFileManager.defaultManager attributesOfItemAtPath:path error:nil];
         if(![attrs[NSFileType] isEqual:NSFileTypeRegular] || [attrs[NSFileSize] unsignedLongLongValue]!=[entry[@"bytes"] unsignedLongLongValue])
-            return finish(false,[NSString stringWithFormat:@"缺少或大小不符：%@。请导入W8测试包的三个文件；原17个文件保留。",file]);
+            return finish(false,[NSString stringWithFormat:@"缺少或大小不符：%@。请导入所选候选文件；已有模型保留。",file]);
         NSString *actual=fileHash(path);
         if(!actual || ![actual isEqual:entry[@"sha256"]])return finish(false,[NSString stringWithFormat:@"%@ SHA256不匹配，未加载Flow；不自动替换原模型",file]);
         identities[key]=actual;
@@ -51,19 +55,20 @@ if ([@[@"flow-w8-reference",@"flow-w8-normal",@"flow-w8-low"] containsObject:rou
     };
     NSDictionary *saved=nil;
     if(!baseline) {
-        NSData *data=[NSData dataWithContentsOfFile:documentPath(@"last-success-flow-w8-reference.json")];
+        NSData *data=[NSData dataWithContentsOfFile:documentPath(referenceCache)];
         id item=data?[NSJSONSerialization JSONObjectWithData:data options:0 error:nil]:nil;
         saved=[item isKindOfClass:NSDictionary.class]?item:nil;
         if(![saved[@"success"] boolValue] || ![saved[@"version"] isEqual:[NSBundle.mainBundle objectForInfoDictionaryKey:@"CFBundleShortVersionString"]] ||
-           ![saved[@"build"] isEqual:[NSBundle.mainBundle objectForInfoDictionaryKey:@"CFBundleVersion"]] || [saved[@"rows"] count]!=5)
-            return finish(false,@"先冷启动完成①W8原版参考，再冷启动测试②或③；不接受旧版本或未完成的参考");
+           ![saved[@"build"] isEqual:[NSBundle.mainBundle objectForInfoDictionaryKey:@"CFBundleVersion"]] || ![saved[@"rows"] isKindOfClass:NSArray.class] || [saved[@"rows"] count]!=5)
+            return finish(false,@"先冷启动完成本版本①参考，再冷启动测试候选；不接受旧版本或未完成的参考");
     }
     NSString *model=[directory stringByAppendingPathComponent:manifest[@"files"][baseline?@"sourceGraph":@"candidateGraph"][@"file"]];
     NSString *failure=nil;
     bool ok=[&]()->bool {
         Graph flow(4,true);
         const auto started=std::chrono::steady_clock::now();
-        if(!flow.open(model,false,trace,baseline?@"原版Flow High":@"FFN W8/block64 High",false,false,false,!low)) {failure=@"W8会话创建失败";return false;}
+        NSString *label=projection?(baseline?@"FFN W8 Low手机参考":[NSString stringWithFormat:@"投影候选 %@",manifest[@"candidateMode"]]):(baseline?@"原版Flow High":@"FFN W8/block64 High");
+        if(!flow.open(model,false,trace,label,false,false,false,!low)) {failure=@"W8会话创建失败";return false;}
         const double loadSeconds=secondsSince(started);
         if(!sampledBudgetOK(trace)){failure=@"会话创建后触发800MB内存保护";return false;}
         int backend=-1,threads=-1;
@@ -80,7 +85,8 @@ if ([@[@"flow-w8-reference",@"flow-w8-normal",@"flow-w8-low"] containsObject:rou
             if(!section(entry,@"x",80*n,initial)||!section(entry,@"mask",n,mask)||!section(entry,@"mu",80*n,mu)||
                !section(entry,@"spks",80,spks)||!section(entry,@"cond",80*n,cond)||!section(entry,@"referenceMel",80*target,pcMel)){failure=@"固定输入长度/有限值检查失败";return false;}
             std::vector<float> phoneMel;
-            NSString *referenceFile=[NSString stringWithFormat:@"flow-w8-cpu-%@.f32",caseID];
+            NSString *pairedReferenceSHA=nil;
+            NSString *referenceFile=[NSString stringWithFormat:(projection?@"flow-projection-cpu-%@.f32":@"flow-w8-cpu-%@.f32"),caseID];
             if(!baseline) {
                 NSDictionary *matched=nil;
                 for(NSDictionary *row in saved[@"rows"])if([row[@"caseID"] isEqual:caseID])matched=row;
@@ -88,6 +94,7 @@ if ([@[@"flow-w8-reference",@"flow-w8-normal",@"flow-w8-low"] containsObject:rou
                 NSData *data=[NSData dataWithContentsOfFile:documentPath(referenceFile)];
                 if(data.length!=80*target*sizeof(float) || ![hashData(data) isEqual:matched[@"targetMelSHA256"]]){failure=@"独立CPU参考Mel损坏或未保存";return false;}
                 phoneMel.resize(80*target);std::memcpy(phoneMel.data(),data.bytes,data.length);
+                pairedReferenceSHA=hashData(data);
             }
             NSMutableDictionary *row=[@{@"caseID":caseID,@"text":entry[@"text"],@"frames":@(n),@"effectiveFrames":@(effective),
                 @"audioSeconds":entry[@"audioSeconds"],@"status":@"started",@"precision":@"High",@"memory":low?@"Low":@"Normal",
@@ -95,6 +102,8 @@ if ([@[@"flow-w8-reference",@"flow-w8-normal",@"flow-w8-low"] containsObject:rou
                 @"fileSHA256":identities,@"manifestSHA256":manifestSHA,@"hashVerificationSeconds":@(verifySeconds),
                 @"sessionLoadCreateSeconds":@(loadSeconds),@"sessionCreationCount":@1,@"thermalStart":@(NSProcessInfo.processInfo.thermalState),
                 @"wholeChainRTFMeasured":@NO,@"listeningValidated":@NO,@"completedRuns":@0} mutableCopy];
+            if(projection) {row[@"candidateMode"]=manifest[@"candidateMode"]?:@"unknown";row[@"recipe"]=recipeID;row[@"controlIsFFNW8"]=@(baseline);}
+            if(pairedReferenceSHA)row[@"pairedReferenceMelSHA256"]=pairedReferenceSHA;
             [rows addObject:row];NSMutableArray *runs=[NSMutableArray array];row[@"runs"]=runs;
             const auto resizeStart=std::chrono::steady_clock::now();
             if(!(flow.shape("x",{1,80,n})&&flow.shape("mu",{1,80,n})&&flow.shape("cond",{1,80,n})&&flow.shape("mask",{1,1,n})&&flow.shape("spks",{1,80})&&flow.shape("t",{1}))){failure=@"Flow输入shape设置失败";return false;}
@@ -134,12 +143,14 @@ if ([@[@"flow-w8-reference",@"flow-w8-normal",@"flow-w8-low"] containsObject:rou
             }
             const auto pc=CosyVoiceProbe::compare(pcMel,mel);
             const auto paired=CosyVoiceProbe::compare(baseline?pcMel:phoneMel,mel);
-            const double limit=baseline?0.001:(low?0.03:0.01);
-            const bool passed=pc.valid&&paired.valid&&paired.relativeL2<=limit&&repeatL2<=0.001;
+            const double limit=projection?0.03:(baseline?0.001:(low?0.03:0.01));
+            const double repeatLimit=projection?1e-5:0.001;
+            const bool passed=pc.valid&&paired.valid&&paired.relativeL2<=limit&&repeatL2<=repeatLimit&&(!projection||pc.relativeL2<=0.03);
             row[@"pcBaselineMelRelativeL2"]=pc.valid?@(pc.relativeL2):NSNull.null;
-            row[@"comparisonReference"]=baseline?@"PC original CPU High":@"same-build independent iPhone CPU High";
+            row[@"comparisonReference"]=baseline?@"PC original CPU High":(projection?@"same-build independent iPhone FFN W8 High/Memory Low":@"same-build independent iPhone CPU High");
             row[@"pairedMelRelativeL2"]=paired.valid?@(paired.relativeL2):NSNull.null;
             row[@"numericProbeLimit"]=@(limit);row[@"repeatRelativeL2"]=@(repeatL2);
+            row[@"repeatLimit"]=@(repeatLimit);
             row[@"warmTwoStepsMeanSeconds"]=@(warm);row[@"warmFlowOnlyRTF"]=@(warm/[entry[@"audioSeconds"] doubleValue]);
             row[@"thermalEnd"]=@(NSProcessInfo.processInfo.thermalState);row[@"status"]=passed?@"numeric-probe-pass":@"needs-quality-review";
             if(baseline&&passed) {

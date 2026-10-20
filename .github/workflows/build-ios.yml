@@ -35,6 +35,11 @@ jobs:
           python3 -m unittest discover -s tests -p test_end_to_end_routes.py
           python3 -m unittest discover -s tests -p test_head_e2e_report.py
           python3 -m unittest discover -s tests -p test_flow_profile.py
+          python3 -m unittest discover -s tests -p test_flow_repack.py
+          python3 -m unittest discover -s tests -p test_mnn_session_config.py
+          python3 -m unittest discover -s tests -p test_projection_summary.py
+          python3 -m unittest discover -s tests -p test_projection_phone.py
+          python3 -m unittest discover -s tests -p test_projection_phone_report.py
           clang++ -O2 -fno-exceptions -std=c++17 -Iios/Bridge tests/op_profile_check.cpp -o build-tests/op-profile-check
           build-tests/op-profile-check
           clang++ -O2 -fno-exceptions -std=c++17 -Iios/Bridge tests/speech_head_check.cpp -o build-tests/speech-head-check
@@ -102,6 +107,7 @@ jobs:
           assert info['LSSupportsOpeningDocumentsInPlace'] is True
           assert (app / 'model-manifest.json').is_file()
           assert (app / 'flow-w8-manifest.json').is_file()
+          assert (app / 'flow-projection-manifest.json').is_file()
           assert (app / 'speech-head-manifest.json').is_file()
           assert not list(app.rglob('*.inc')), 'Bridge includes must not be bundled as resources'
           print('Unsigned app and file sharing verified')

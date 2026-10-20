@@ -1,0 +1,554 @@
+{
+  "schemaVersion": 1,
+  "recipe": "cosyvoice3-flow-projection-w8-g64-v1",
+  "candidateMode": "ffn-qvout-w8",
+  "byteOrder": "little-endian",
+  "files": {
+    "sourceGraph": {
+      "file": "flow-ffn-w8-g64.mnn",
+      "bytes": 1343072,
+      "sha256": "ac9e126e8e2847db1421af956499fb0c99babb8924336924070ac996c34bfc35"
+    },
+    "sourceWeight": {
+      "file": "flow-ffn-w8-g64.mnn.weight",
+      "bytes": 582524664,
+      "sha256": "f5d713123341572a85fd3639c02a852e971916f18c80b181861f20cda4f662fd"
+    },
+    "fixtures": {
+      "file": "flow-w8-fixtures.f32.bin",
+      "bytes": 3498196,
+      "sha256": "3d153e6b1d9e6c2735c34d0349cf91f36f18c33b8ec9877731d25684e43b2b37"
+    },
+    "candidateGraph": {
+      "file": "flow-projection-ffn-qvout-w8-g64.mnn",
+      "bytes": 1346768,
+      "sha256": "79b0b28e341aabab0198ef60da4402181f1b4dc9c9ff062e20b60d2712221815"
+    },
+    "candidateWeight": {
+      "file": "flow-projection-ffn-qvout-w8-g64.mnn.weight",
+      "bytes": 521986956,
+      "sha256": "884b43e1fae71b55e2ce31aaf199434da9fb64429047a8eb771e34f903ea9205"
+    }
+  },
+  "cases": [
+    {
+      "id": "zh-numbers",
+      "text": "现在是下午三点二十分，室内温度二十三点五度。",
+      "frames": 416,
+      "effectiveFrames": 392,
+      "audioSeconds": 4.36,
+      "times": [
+        0.0,
+        0.2928932188134524
+      ],
+      "deltas": [
+        0.2928932188134524,
+        0.7071067811865476
+      ],
+      "sections": {
+        "x": {
+          "offset": 0,
+          "count": 33280,
+          "shape": [
+            1,
+            80,
+            416
+          ]
+        },
+        "mask": {
+          "offset": 133120,
+          "count": 416,
+          "shape": [
+            1,
+            1,
+            416
+          ]
+        },
+        "mu": {
+          "offset": 134784,
+          "count": 33280,
+          "shape": [
+            1,
+            80,
+            416
+          ]
+        },
+        "spks": {
+          "offset": 267904,
+          "count": 80,
+          "shape": [
+            1,
+            80
+          ]
+        },
+        "cond": {
+          "offset": 268224,
+          "count": 33280,
+          "shape": [
+            1,
+            80,
+            416
+          ]
+        },
+        "t": {
+          "offset": 401344,
+          "count": 1,
+          "shape": [
+            1
+          ]
+        },
+        "velocity1": {
+          "offset": 401348,
+          "count": 33280,
+          "shape": [
+            1,
+            80,
+            416
+          ]
+        },
+        "velocity2": {
+          "offset": 534468,
+          "count": 33280,
+          "shape": [
+            1,
+            80,
+            416
+          ]
+        },
+        "referenceMel": {
+          "offset": 667588,
+          "count": 17440,
+          "shape": [
+            80,
+            218
+          ]
+        }
+      }
+    },
+    {
+      "id": "zh-question",
+      "text": "你准备好了吗？别着急，我们慢慢开始。",
+      "frames": 384,
+      "effectiveFrames": 356,
+      "audioSeconds": 3.64,
+      "times": [
+        0.0,
+        0.2928932188134524
+      ],
+      "deltas": [
+        0.2928932188134524,
+        0.7071067811865476
+      ],
+      "sections": {
+        "x": {
+          "offset": 737348,
+          "count": 30720,
+          "shape": [
+            1,
+            80,
+            384
+          ]
+        },
+        "mask": {
+          "offset": 860228,
+          "count": 384,
+          "shape": [
+            1,
+            1,
+            384
+          ]
+        },
+        "mu": {
+          "offset": 861764,
+          "count": 30720,
+          "shape": [
+            1,
+            80,
+            384
+          ]
+        },
+        "spks": {
+          "offset": 984644,
+          "count": 80,
+          "shape": [
+            1,
+            80
+          ]
+        },
+        "cond": {
+          "offset": 984964,
+          "count": 30720,
+          "shape": [
+            1,
+            80,
+            384
+          ]
+        },
+        "t": {
+          "offset": 1107844,
+          "count": 1,
+          "shape": [
+            1
+          ]
+        },
+        "velocity1": {
+          "offset": 1107848,
+          "count": 30720,
+          "shape": [
+            1,
+            80,
+            384
+          ]
+        },
+        "velocity2": {
+          "offset": 1230728,
+          "count": 30720,
+          "shape": [
+            1,
+            80,
+            384
+          ]
+        },
+        "referenceMel": {
+          "offset": 1353608,
+          "count": 14560,
+          "shape": [
+            80,
+            182
+          ]
+        }
+      }
+    },
+    {
+      "id": "zh-heldout",
+      "text": "收到消息以后，请给我回个电话，我们再确定见面的时间。",
+      "frames": 416,
+      "effectiveFrames": 386,
+      "audioSeconds": 4.24,
+      "times": [
+        0.0,
+        0.2928932188134524
+      ],
+      "deltas": [
+        0.2928932188134524,
+        0.7071067811865476
+      ],
+      "sections": {
+        "x": {
+          "offset": 1411848,
+          "count": 33280,
+          "shape": [
+            1,
+            80,
+            416
+          ]
+        },
+        "mask": {
+          "offset": 1544968,
+          "count": 416,
+          "shape": [
+            1,
+            1,
+            416
+          ]
+        },
+        "mu": {
+          "offset": 1546632,
+          "count": 33280,
+          "shape": [
+            1,
+            80,
+            416
+          ]
+        },
+        "spks": {
+          "offset": 1679752,
+          "count": 80,
+          "shape": [
+            1,
+            80
+          ]
+        },
+        "cond": {
+          "offset": 1680072,
+          "count": 33280,
+          "shape": [
+            1,
+            80,
+            416
+          ]
+        },
+        "t": {
+          "offset": 1813192,
+          "count": 1,
+          "shape": [
+            1
+          ]
+        },
+        "velocity1": {
+          "offset": 1813196,
+          "count": 33280,
+          "shape": [
+            1,
+            80,
+            416
+          ]
+        },
+        "velocity2": {
+          "offset": 1946316,
+          "count": 33280,
+          "shape": [
+            1,
+            80,
+            416
+          ]
+        },
+        "referenceMel": {
+          "offset": 2079436,
+          "count": 16960,
+          "shape": [
+            80,
+            212
+          ]
+        }
+      }
+    },
+    {
+      "id": "en-heldout",
+      "text": "Please save the document before you close the application.",
+      "frames": 352,
+      "effectiveFrames": 322,
+      "audioSeconds": 2.96,
+      "times": [
+        0.0,
+        0.2928932188134524
+      ],
+      "deltas": [
+        0.2928932188134524,
+        0.7071067811865476
+      ],
+      "sections": {
+        "x": {
+          "offset": 2147276,
+          "count": 28160,
+          "shape": [
+            1,
+            80,
+            352
+          ]
+        },
+        "mask": {
+          "offset": 2259916,
+          "count": 352,
+          "shape": [
+            1,
+            1,
+            352
+          ]
+        },
+        "mu": {
+          "offset": 2261324,
+          "count": 28160,
+          "shape": [
+            1,
+            80,
+            352
+          ]
+        },
+        "spks": {
+          "offset": 2373964,
+          "count": 80,
+          "shape": [
+            1,
+            80
+          ]
+        },
+        "cond": {
+          "offset": 2374284,
+          "count": 28160,
+          "shape": [
+            1,
+            80,
+            352
+          ]
+        },
+        "t": {
+          "offset": 2486924,
+          "count": 1,
+          "shape": [
+            1
+          ]
+        },
+        "velocity1": {
+          "offset": 2486928,
+          "count": 28160,
+          "shape": [
+            1,
+            80,
+            352
+          ]
+        },
+        "velocity2": {
+          "offset": 2599568,
+          "count": 28160,
+          "shape": [
+            1,
+            80,
+            352
+          ]
+        },
+        "referenceMel": {
+          "offset": 2712208,
+          "count": 11840,
+          "shape": [
+            80,
+            148
+          ]
+        }
+      }
+    },
+    {
+      "id": "mixed-heldout",
+      "text": "今天下午测试 CPU 模式，明天再比较 GPU 的速度。",
+      "frames": 416,
+      "effectiveFrames": 396,
+      "audioSeconds": 4.44,
+      "times": [
+        0.0,
+        0.2928932188134524
+      ],
+      "deltas": [
+        0.2928932188134524,
+        0.7071067811865476
+      ],
+      "sections": {
+        "x": {
+          "offset": 2759568,
+          "count": 33280,
+          "shape": [
+            1,
+            80,
+            416
+          ]
+        },
+        "mask": {
+          "offset": 2892688,
+          "count": 416,
+          "shape": [
+            1,
+            1,
+            416
+          ]
+        },
+        "mu": {
+          "offset": 2894352,
+          "count": 33280,
+          "shape": [
+            1,
+            80,
+            416
+          ]
+        },
+        "spks": {
+          "offset": 3027472,
+          "count": 80,
+          "shape": [
+            1,
+            80
+          ]
+        },
+        "cond": {
+          "offset": 3027792,
+          "count": 33280,
+          "shape": [
+            1,
+            80,
+            416
+          ]
+        },
+        "t": {
+          "offset": 3160912,
+          "count": 1,
+          "shape": [
+            1
+          ]
+        },
+        "velocity1": {
+          "offset": 3160916,
+          "count": 33280,
+          "shape": [
+            1,
+            80,
+            416
+          ]
+        },
+        "velocity2": {
+          "offset": 3294036,
+          "count": 33280,
+          "shape": [
+            1,
+            80,
+            416
+          ]
+        },
+        "referenceMel": {
+          "offset": 3427156,
+          "count": 17760,
+          "shape": [
+            80,
+            222
+          ]
+        }
+      }
+    }
+  ],
+  "quantizedOperators": 110,
+  "preservedFP16Operators": 81,
+  "pcScreen": {
+    "mode": "ffn-qvout-w8",
+    "w8_operators": 110,
+    "weight_bytes": 521986956,
+    "normal_validation": {
+      "cases": 5,
+      "max_teacher_velocity_l2": 0.006690250288657826,
+      "max_closed_loop_mel_l2": 0.004790842437220624,
+      "mean_closed_loop_mel_l2": 0.0039143593287183365,
+      "numeric_screen_pass": true
+    },
+    "low_calibration": {
+      "cases": 20,
+      "max_teacher_velocity_l2": 0.027891561762783037,
+      "max_closed_loop_mel_l2": 0.015120301600404442,
+      "mean_closed_loop_mel_l2": 0.012051725338216558,
+      "numeric_screen_pass": true
+    },
+    "low_validation": {
+      "cases": 5,
+      "max_teacher_velocity_l2": 0.027174069183877388,
+      "max_closed_loop_mel_l2": 0.01764769738126085,
+      "mean_closed_loop_mel_l2": 0.012918171448410893,
+      "numeric_screen_pass": true
+    },
+    "windows_timing": {
+      "cases": 5,
+      "warm_total_seconds": 7.823049800001172,
+      "audio_seconds": 19.64,
+      "median_allocator_mb": 867.227294921875,
+      "max_repeat_mel_l2": 0,
+      "descriptive_speedup_vs_ffn": 0.9641242728634777
+    },
+    "numeric_screen_pass": true,
+    "eligible_for_phone_review": true,
+    "listening_validated": false
+  },
+  "pcReportSHA256": "49190cd464c3fcf699e52aac471171668d162d4867b1a0b0003d747aabbd8503",
+  "auditSHA256": "87a2863313e0fbc3f0cc01f36778d37484c5ae194e4d62da517980d77083ea20",
+  "automaticPromotion": false,
+  "listeningValidated": false,
+  "scope": "Independent CPU High/Memory Low five-fixture phone module trial; no LLM/HiFT or whole-chain RTF; original FFN control preserved",
+  "gates": {
+    "pcOriginalMelRelativeL2": 0.03,
+    "pairedPhoneFFNMelRelativeL2": 0.03,
+    "repeatRelativeL2": 1e-05
+  }
+}

@@ -32,8 +32,9 @@ def csv_tokens(path: Path) -> list[int]:
 
 
 def model_session(path: Path, precision: str = "high", memory: str = "normal"):
+    from mnn_session_config import cpu_session_config
     network = MNN.Interpreter(str(path))
-    session = network.createSession({"backend": "CPU", "precision": precision, "memory": memory, "numThread": 4})
+    session = network.createSession(cpu_session_config(precision,memory,4))
     return network, session
 
 

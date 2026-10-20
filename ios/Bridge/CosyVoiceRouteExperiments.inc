@@ -3,7 +3,7 @@
 + (NSDictionary<NSString *, id> *)runExperiment:(NSString *)route atDirectory:(NSString *)directory {
     @autoreleasepool {
         NSSet *allowed = [NSSet setWithArray:@[@"flow-buckets",@"flow-threads",@"flow-thread-4",@"flow-thread-2",@"flow-thread-3",@"flow-bf16",@"llm-reuse",@"llm-threads",@"hift-threads",@"flow-metal-low-256",@"flow-metal-low-384",@"flow-metal-nan",@"flow-metal-hybrid-256",@"flow-metal-hybrid-384",@"flow-metal-hybrid-512",@"flow-cpu-reference-384",@"flow-cpu-reference-512"]];
-        if (![allowed containsObject:route] && ![@[@"flow-w8-reference",@"flow-w8-normal",@"flow-w8-low",@"flow-w8-profile",@"flow-w8-metal-high"] containsObject:route]) return @{@"success":@NO,@"message":@"未知试验路线"};
+        if (![allowed containsObject:route] && ![@[@"flow-w8-reference",@"flow-w8-normal",@"flow-w8-low",@"flow-w8-profile",@"flow-w8-metal-high",@"flow-projection-reference",@"flow-projection-candidate"] containsObject:route]) return @{@"success":@NO,@"message":@"未知试验路线"};
         Trace trace([NSString stringWithFormat:@"last-experiment-%@.log",route]);
         MemorySampler allMemory; trace.sampler=&allMemory;
         NSMutableArray *rows=[NSMutableArray array];
@@ -31,6 +31,11 @@
             if([route isEqual:@"flow-w8-reference"]&&[summary[@"success"] boolValue]&&rows.count==5) {
                 if(![json writeToFile:documentPath(@"last-success-flow-w8-reference.json") atomically:YES]) {
                     summary[@"success"]=@NO;summary[@"message"]=@"成功参考缓存写入失败；旧成功缓存保留，未自动覆盖";
+                }
+            }
+            if([route isEqual:@"flow-projection-reference"]&&[summary[@"success"] boolValue]&&rows.count==5) {
+                if(![json writeToFile:documentPath(@"last-success-flow-projection-reference.json") atomically:YES]) {
+                    summary[@"success"]=@NO;summary[@"message"]=@"完整投影对照缓存写入失败，未作为可用手机参考";
                 }
             }
             return summary;

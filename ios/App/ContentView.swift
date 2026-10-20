@@ -82,11 +82,11 @@ struct ContentView: View {
                     Button("当前路线返回后停止") { experiments.stop() }
                         .disabled(!experiments.isRunning)
                     Text(experiments.status).font(.caption).textSelection(.enabled)
-                    Text("④先做CPU热点并保存384帧参考，冷启动后再做⑤Metal High。复用已导入的W8模型和flow-w8-fixtures.f32.bin，不需新权重；每项只有一个Flow，无LLM/HiFT。")
+                    Text("先①原FFN五条参考，冷启动降温后再②投影W8候选。复用已有FFN模型和flow-w8-fixtures.f32.bin；额外导入候选的.mnn和.weight两个文件，不替换原模型。")
                         .font(.caption).foregroundStyle(.secondary)
-                    Text("CPU热点只收集标量计时，不读中间大张量。回调耗时包含诊断开销，不作为生产速度排名；普通两步另计。所有结果自动汇入同一份报告。")
+                    Text("每项独立加载一个CPU Flow，无LLM/HiFT。五条均含首次与两次预热；候选必须匹配同版本、输入、权重和参考Mel的SHA256。只分享同一个统一报告。")
                         .font(.caption).foregroundStyle(.secondary)
-                    Text("Metal用High避免重复旧Low溢出路线，但内存仍可能不够。先验有限值、CPU偏差和模块速度，通过后才能考虑整链；不会自动切换默认CPU。")
+                    Text("GPU High冷启动内存门槛未通过、CPU热点已定位，旧按钮已归档。新候选只是模块筛查；不宣称音质、流式或整链RTF通过，800MB采样底线不变。")
                         .font(.caption).foregroundStyle(.secondary)
                   }
                 }
@@ -102,7 +102,7 @@ struct ContentView: View {
                     }
                     Text("生成仍用完整EOS、Flow High两步与HiFT Low；800MB底线不变。预加载只是播放策略，不开启全模型常驻。")
                         .font(.caption).foregroundStyle(.secondary)
-                    Text("A/B/C自动用相同五句、全部生成后播放；A/B逐句独立LLM，C三句批内复用，每句仍清KV/重置seed。比较B和C才能判断复用收益。原模型、两个约208MB裁剪候选文件全部保留。")
+                    Text("输出头A/B配对已归档，保留裁剪头批内复用的固定五句整链基线；它仍使用原FFN W8。新投影候选只有上方独立模块入口，不会混入正式生成。")
                         .font(.caption).foregroundStyle(.secondary)
                 }
                 Section("统一测试报告 · 只发这一个") {

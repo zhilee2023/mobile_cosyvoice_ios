@@ -19,6 +19,7 @@ targets:
           - "*.inc"
       - path: model-manifest.json
       - path: flow-w8-manifest.json
+      - path: flow-projection-manifest.json
       - path: speech-head-manifest.json
     settings:
       base:
