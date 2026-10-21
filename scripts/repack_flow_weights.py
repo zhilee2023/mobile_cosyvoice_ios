@@ -111,10 +111,10 @@ def external_regions(f: FlatBuffer, weight_bytes: int) -> list[dict]:
     return regions
 
 
-def repack(source: Path, destination: Path, mode: str, block: int, bits: int = 8, algorithm: str = 'rtn', w4_scope: str = 'all-selected') -> dict:
+def repack(source: Path, destination: Path, mode: str, block: int, bits: int = 8, algorithm: str = 'rtn', w4_scope: str = 'all-selected', activation_stats: Path | None = None) -> dict:
     import numpy as np
     if mode not in (*GROUPS,'fp32','all-w8') or block not in (32,64,128):raise ValueError('Unknown recipe/block')
-    if bits not in (4,8) or algorithm not in ('rtn','hqq') or w4_scope not in ('all-selected','ffn','projections'):raise ValueError('Unreviewed PTQ configuration')
+    if bits not in (4,8) or algorithm not in ('rtn','hqq','mse','gptq-blockdiag') or w4_scope not in ('all-selected','ffn','projections'):raise ValueError('Unreviewed PTQ configuration')
     if bits==4 and mode not in ('ffn-w8','ffn-qvout-w8'):raise ValueError('W4 screening keeps K and other operators original')
     if destination.exists():raise FileExistsError(destination)
     source_graph=source/FLOW;source_weight=source/(FLOW+".weight")
@@ -132,6 +132,13 @@ def repack(source: Path, destination: Path, mode: str, block: int, bits: int = 8
     if hashes!={"graph":"b74ece0a1a2e165eef53dbc8d628310a1b464323d4729959069744baecf418d7",
                 "weight":"e8d363544063702a9da0800f3a2bbba5669ea719943a5de15a8b08b0f28d24bc"}:
         raise ValueError("Repacker only accepts this reviewed FP16 Flow export")
+    stats={}
+    if algorithm=='gptq-blockdiag':
+        if activation_stats is None:raise ValueError('GPTQ requires calibration-only activation statistics')
+        ar=json.loads((activation_stats/'activation-report.json').read_text(encoding='utf-8'))
+        if ar.get('state')!='completed' or ar.get('validation_used_for_fit') is not False or ar.get('block')!=block or ar.get('snapshots_completed')!=40 or len(ar.get('calibration_case_ids',[]))!=20 or len(ar.get('layers',[]))!=110:raise ValueError('Incomplete or contaminated activation calibration')
+        if ar['source_graph_sha256']!=hashes['graph'] or ar['source_weight_sha256']!=hashes['weight']:raise ValueError('Activation model identity mismatch')
+        stats={x['name']:x for x in ar['layers']}
     destination.mkdir(parents=True,exist_ok=False)
     output_graph=destination/"flow.mnn";output_weight=destination/"flow.mnn.weight"
     rows=[]
@@ -160,7 +167,12 @@ def repack(source: Path, destination: Path, mode: str, block: int, bits: int = 8
                     use_w4=bits==4 and (w4_scope=='all-selected' or (w4_scope=='ffn' and '/ff/' in region['name']) or (w4_scope=='projections' and projection_group(region['name']) in {'q','v','out'}))
                     if use_w4:
                         from flow_w4_ptq import encode_w4
-                        payload,alpha,quant_rows,error=encode_w4(weight,oc,block,algorithm)
+                        h=None
+                        if algorithm=='gptq-blockdiag':
+                            entry=stats[region['name']];path=activation_stats/entry['file']
+                            if digest(path)!=entry['sha256'] or entry['input_channels']!=ic:raise ValueError('Activation stats identity/layout mismatch')
+                            with np.load(path) as z:h=z['hessian'].copy()
+                        payload,alpha,quant_rows,error=encode_w4(weight,oc,block,algorithm,h)
                     else:payload,alpha,quant_rows,error=encode_w8(weight,oc,block)
                     writer.write(payload);writer.write(alpha);writer.write(bias)
                     updated=[offset,len(payload),len(alpha),len(bias),0]
@@ -190,6 +202,9 @@ def repack(source: Path, destination: Path, mode: str, block: int, bits: int = 8
     if bits==4:
         report.update({'bits':bits,'algorithm':algorithm,'w4_scope':w4_scope,'w4_operators':sum(r['format']=='w4' for r in rows),
           'w8_operators':sum(r['format']=='w8' for r in rows),'note':'Native IDST W4 packed nibbles, '+algorithm+' weight-only; K and nonselected bytes unchanged; no activation-fit/GPTQ/AWQ; not phone acceptance'})
+        if algorithm=='gptq-blockdiag':
+            report['activation_stats_sha256']=digest(activation_stats/'activation-report.json')
+            report['note']='Calibration-only block-diagonal GPTQ approximation, block64/damp1%; no cross-block feedback/actorder; NOT full GPTQ/AWQ; not phone acceptance'
     (destination/"repack-report.json").write_text(json.dumps(report,indent=2)+"\n",encoding="utf-8")
     return report
 

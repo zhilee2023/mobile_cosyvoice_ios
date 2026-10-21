@@ -9,15 +9,18 @@ from audit_mnn_weight_layout import FlatBuffer
 def main():
     p=argparse.ArgumentParser(description=__doc__);p.add_argument('--assets',type=Path,required=True)
     p.add_argument('--corpus',type=Path,required=True);p.add_argument('--output',type=Path,required=True)
+    p.add_argument('--methods',nargs='+',choices=['rtn','hqq','mse','gptq-blockdiag'],default=['rtn','hqq'])
+    p.add_argument('--activation-stats',type=Path)
+    p.add_argument('--block',type=int,choices=[32,64,128],default=64)
     a=p.parse_args();a.output.mkdir(parents=True,exist_ok=False);corpus=verify_corpus(a.corpus,a.assets)
     report={'state':'running','scope':'Windows CPU High, not iPhone throughput/listening acceptance; no automatic deployment',
       'corpus':{'sha256':digest(a.corpus/'calibration-report.json'),'calibration':20,'validation':5},'gates':GATES,'profiles':{}}
     def save():(a.output/'w4-report.json').write_text(json.dumps(report,indent=2)+'\n',encoding='utf-8')
     save()
     for scope,mode in [('ffn','ffn-w8'),('projections','ffn-qvout-w8')]:
-      for method in ['rtn','hqq']:
+      for method in a.methods:
         key=scope+'-w4-'+method;print('REPACK',key,flush=True)
-        folder=a.output/key;recipe=repack(a.assets,folder,mode,64,bits=4,algorithm=method,w4_scope=scope)
+        folder=a.output/key;recipe=repack(a.assets,folder,mode,a.block,bits=4,algorithm=method,w4_scope=scope,activation_stats=a.activation_stats)
         entry={'recipe':recipe,'evaluations':{}};report['profiles'][key]=entry
         # Independent region/bias audit; no rewrite is allowed outside selection.
         source_graph=a.assets/'flow.cfg-student-2step.batch1.fp16.mnn';source_weight=Path(str(source_graph)+'.weight')

@@ -15,7 +15,7 @@ class W4(unittest.TestCase):
         a=np.frombuffer(alpha,dtype='<f4');decoded=(q.astype(np.float32)-8)*a[1]+(a[0]+8*a[1])
         np.testing.assert_array_equal(decoded,w.ravel());self.assertEqual(error,0)
     def test_constant_and_hqq_finite(self):
-        for method in ['rtn','hqq']:
+        for method in ['rtn','hqq','mse']:
             w=np.full((2,64),.5,dtype=np.float32)
             payload,alpha,rows,error=encode_w4(w,2,64,method)
             self.assertEqual(error,0);self.assertEqual(rows,2)
@@ -24,4 +24,21 @@ class W4(unittest.TestCase):
     def test_metadata(self):
         data=bytearray(bytes(12));table=append_quant_table(data,256,4);f=FlatBuffer(bytes(data))
         self.assertEqual(f.scalar(table,7),4);self.assertEqual(f.scalar(table,8),-8)
+    def test_mse_search_contains_rtn(self):
+        w=np.random.default_rng(8).normal(size=(8,256)).astype(np.float32);w[0,0]=12
+        def decoded(method):
+            payload,alpha,rows,_=encode_w4(w,8,64,method)
+            packed=np.frombuffer(payload[26:],dtype=np.uint8)
+            q=np.stack((packed>>4,packed&15),axis=1).reshape(rows,64).astype(np.float32)-8
+            a=np.frombuffer(alpha,dtype='<f4').reshape(rows,2)
+            return q*a[:,1,None]+(a[:,0]+8*a[:,1])[:,None]
+        mse=np.mean((decoded('mse')-w.reshape(-1,64))**2,axis=1)
+        rtn=np.mean((decoded('rtn')-w.reshape(-1,64))**2,axis=1)
+        self.assertTrue(np.all(mse<=rtn+1e-7))
+    def test_gptq_diagonal_identity_reduces_to_rtn(self):
+        w=np.random.default_rng(7).normal(size=(4,128)).astype(np.float32)
+        actual=encode_w4(w,4,64,'gptq-blockdiag',np.tile(np.eye(64)[None,:,:],(2,1,1)))
+        reference=encode_w4(w,4,64,'rtn')
+        self.assertEqual(actual[:3],reference[:3])
+        with self.assertRaises(ValueError):encode_w4(w,4,64,'gptq-blockdiag')
 if __name__=='__main__':unittest.main()
