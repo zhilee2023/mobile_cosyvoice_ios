@@ -3,7 +3,7 @@
 + (NSDictionary<NSString *, id> *)runExperiment:(NSString *)route atDirectory:(NSString *)directory {
     @autoreleasepool {
         NSSet *allowed = [NSSet setWithArray:@[@"flow-buckets",@"flow-threads",@"flow-thread-4",@"flow-thread-2",@"flow-thread-3",@"flow-bf16",@"llm-reuse",@"llm-threads",@"hift-threads",@"flow-metal-low-256",@"flow-metal-low-384",@"flow-metal-nan",@"flow-metal-hybrid-256",@"flow-metal-hybrid-384",@"flow-metal-hybrid-512",@"flow-cpu-reference-384",@"flow-cpu-reference-512"]];
-        if (![allowed containsObject:route] && ![@[@"flow-w8-reference",@"flow-w8-normal",@"flow-w8-low",@"flow-w8-profile",@"flow-w8-metal-high",@"flow-projection-reference",@"flow-projection-candidate",@"flow-projection-profile",@"flow-awq-profile"] containsObject:route]) return @{@"success":@NO,@"message":@"未知试验路线"};
+        if (![allowed containsObject:route] && ![@[@"flow-w8-reference",@"flow-w8-normal",@"flow-w8-low",@"flow-w8-profile",@"flow-w8-metal-high",@"flow-projection-reference",@"flow-projection-candidate",@"flow-projection-profile",@"flow-awq-profile",@"flow-projection-cpu-reference-256",@"flow-projection-cpu-reference-384",@"flow-projection-metal-high-256",@"flow-projection-metal-high-384"] containsObject:route]) return @{@"success":@NO,@"message":@"未知试验路线"};
         Trace trace([NSString stringWithFormat:@"last-experiment-%@.log",route]);
         MemorySampler allMemory; trace.sampler=&allMemory;
         NSMutableArray *rows=[NSMutableArray array];
@@ -36,6 +36,12 @@
             if([route isEqual:@"flow-projection-reference"]&&[summary[@"success"] boolValue]&&rows.count==5) {
                 if(![json writeToFile:documentPath(@"last-success-flow-projection-reference.json") atomically:YES]) {
                     summary[@"success"]=@NO;summary[@"message"]=@"完整投影对照缓存写入失败，未作为可用手机参考";
+                }
+            }
+            if(([route hasPrefix:@"flow-projection-cpu-reference-"]||[route hasPrefix:@"flow-projection-metal-high-"])&&[summary[@"success"] boolValue]) {
+                NSString *successPath=documentPath([NSString stringWithFormat:@"last-success-%@.json",route]);
+                if(![json writeToFile:successPath atomically:YES]) {
+                    summary[@"success"]=@NO;summary[@"message"]=@"独立参考/通过状态缓存写入失败；未覆盖旧成功缓存";
                 }
             }
             return summary;

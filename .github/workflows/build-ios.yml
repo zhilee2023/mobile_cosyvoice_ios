@@ -35,6 +35,7 @@ jobs:
           python3 -m unittest discover -s tests -p test_end_to_end_routes.py
           python3 -m unittest discover -s tests -p test_head_e2e_report.py
           python3 -m unittest discover -s tests -p test_flow_profile.py
+          python3 -m unittest discover -s tests -p test_projection_metal.py
           python3 -m unittest discover -s tests -p test_flow_repack.py
           python3 -m unittest discover -s tests -p test_mnn_session_config.py
           python3 -m unittest discover -s tests -p test_projection_summary.py
@@ -113,7 +114,7 @@ jobs:
           assert (app / 'flow-projection-manifest.json').is_file()
           assert (app / 'flow-awq-manifest.json').is_file()
           assert (app / 'speech-head-manifest.json').is_file()
-          assert info['CFBundleShortVersionString'] == '0.7.18' and info['CFBundleVersion'] == '32'
+          assert info['CFBundleShortVersionString'] == '0.7.19' and info['CFBundleVersion'] == '33'
           assert not list(app.rglob('*.mnn')) and not list(app.rglob('*.weight')), 'Do not bundle optional model weights'
           assert not list(app.rglob('*.inc')), 'Bridge includes must not be bundled as resources'
           print('Unsigned app and file sharing verified')

@@ -83,11 +83,11 @@ struct ContentView: View {
                     Button("当前路线返回后停止") { experiments.stop() }
                         .disabled(!experiments.isRunning)
                     Text(experiments.status).font(.caption).textSelection(.enabled)
-                    Text("先测投影W8热点，关闭App并降温冷启动后，再测AWQ热点。复用已有两套模型与flow-w8-fixtures.f32.bin，不需重下权重。两个入口都完成后只分享一个统一报告。")
+                    Text("按①CPU256→②Metal256→③CPU384→④Metal384顺序，每项之间关闭App、降温冷启动；②失败先发报告，不继续④。复用已有投影W8两文件，不需重下权重。")
                         .font(.caption).foregroundStyle(.secondary)
-                    Text("每项只有一个CPU Flow，无LLM/HiFT；同一批五条输入分别测首次、预热和回调。记录Scale、布局、线性层等热点；回调开销单列，不当普通推理耗时或整链RTF。")
+                    Text("每项只有一个CPU或Metal Flow，无LLM/HiFT；固定真实speech token，每项两步×三轮。参考必须同版本、权重SHA、输入SHA和时间表一致。同步等待计入耗时，只分享一个统一报告。")
                         .font(.caption).foregroundStyle(.secondary)
-                    Text("当前完整生成的LLM、Conditioner、Flow、F0、HiFT均走CPU；Metal旧实验已归档。AWQ数值筛查未过标记保留，800MB采样底线不变；热点完成不等于音质或长文验收。")
+                    Text("只有②④实验使用Metal High，正式完整生成仍走CPU。初始化后至少1100MB余量，20ms采样800MB底线不变；相对CPU的1%模块筛查与严格1e-3分别报告，不等于音质/整链验收。")
                         .font(.caption).foregroundStyle(.secondary)
                   }
                 }
