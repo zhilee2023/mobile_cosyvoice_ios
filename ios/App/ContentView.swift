@@ -102,7 +102,7 @@ struct ContentView: View {
                     }
                     Text("生成仍用完整EOS、Flow High两步与HiFT Low；800MB底线不变。预加载只是播放策略，不开启全模型常驻。")
                         .font(.caption).foregroundStyle(.secondary)
-                    Text("输出头A/B配对已归档，保留裁剪头批内复用的固定五句整链基线；它仍使用原FFN W8。新投影候选只有上方独立模块入口，不会混入正式生成。")
+                    Text("本轮A旧FFN W8 → B投影W8 → C投影W8＋HiFT批内复用；固定相同五句/逐句seed，均裁剪输出头并批内复用LLM，全部生成后播放。每组前退出重开并降温，只发同一份JSON。正常生成按钮仍保持原配方。")
                         .font(.caption).foregroundStyle(.secondary)
                 }
                 Section("统一测试报告 · 只发这一个") {
@@ -112,7 +112,7 @@ struct ContentView: View {
                         .font(.caption).foregroundStyle(.secondary)
                 }
                 Section("播放与日志") {
-                    ForEach([("end-to-end-original.wav", "原版整链"), ("end-to-end-flow-w8.wav", "Flow W8整链"), ("end-to-end-head-full.wav", "输出头配对A · 完整头"), ("end-to-end-head-reduced.wav", "输出头配对B · 裁剪头"), ("end-to-end-head-reuse.wav", "输出头配对C · 批内复用")], id: \.0) { item in
+                    ForEach([("end-to-end-original.wav", "原版整链"), ("end-to-end-flow-w8.wav", "Flow W8整链"), ("end-to-end-head-reuse.wav", "本轮A · FFN W8基线"), ("end-to-end-projection.wav", "本轮B · 投影W8"), ("end-to-end-projection-hift-reuse.wav", "本轮C · 投影W8＋HiFT复用")], id: \.0) { item in
                         let url = SentenceStream.documents.appendingPathComponent(item.0)
                         if exists(url) {
                             Button("试听最近成功：\(item.1)") { play(url) }.disabled(busy)
@@ -165,7 +165,7 @@ struct ContentView: View {
         let actualMode = mode ?? (useW8Flow ? "three-sentence-staged-w8" : "three-sentence-staged")
         let headPair = LongTextBenchmarks.headMode(actualMode) != nil
         sentences.start(text: headPair ? LongTextBenchmarks.fiveSentenceText : text, directory: models.directory.path, optimized: true,
-                        threads: threads, player: player, resident: false, lowHiFT: lowHiFT,
+                        threads: threads, player: player, resident: false, lowHiFT: headPair ? true : lowHiFT,
                         experimentMode: actualMode, playbackMode: headPair ? .complete : playbackMode)
     }
     private func startExperiments(_ routes: [String]) {

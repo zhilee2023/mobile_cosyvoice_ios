@@ -89,7 +89,7 @@ final class SentenceStream: ObservableObject {
             record(resident ? "自适应路线：尝试唯一Flow384；LLM前1800MB不足则释放Flow，本批改串行；每句重新prefill，无跨句KV；800MB底线不变" : "对照版：每句释放全部模型，每段最多160语音token/6.4秒")
         }
         record("HiFT core=\(lowHiFT ? "Low" : "High")，F0与Flow仍High；非token级流式")
-        record("Flow配方：\(LongTextBenchmarks.usesW8(experimentMode) ? "FFN W8/block64 / Memory Low" : "原始FP16存储")；输出头：\(LongTextBenchmarks.headMode(experimentMode) ?? "未裁剪/默认采样")；完整EOS仍必须满足")
+        record("Flow配方：\(LongTextBenchmarks.flowRecipe(experimentMode))；输出头：\(LongTextBenchmarks.headMode(experimentMode) ?? "未裁剪/默认采样")；HiFT批内复用=\(LongTextBenchmarks.reusesHiFT(experimentMode))；完整EOS仍必须满足")
         record("播放模式：\(playbackMode.title)；预加载在磁盘，最多6条文件/8MiB，内存播放队列仍≤2秒目标/4秒硬限；不宣称生成速度改善")
         if let experimentMode { record("新整链路线：\(experimentMode)；先短文验收，不保证RTF降低/分钟级内存稳定；分阶段路线首句可能更晚") }
         task = Task { await run(plan: plan, directory: directory, optimized: optimized, threads: threads, player: player, resident: resident, lowHiFT: lowHiFT, experimentMode: experimentMode, playbackMode: playbackMode) }
@@ -336,6 +336,8 @@ final class SentenceStream: ObservableObject {
                          "completedAudio": hasCompletedAudio, "completedPlayback": completedPlayback,
                          "pipelineMode": experimentMode ?? "serial", "lifecycle": lifecycleResult,
                          "flowW8": LongTextBenchmarks.usesW8(experimentMode),
+                         "flowRecipe": LongTextBenchmarks.flowRecipe(experimentMode),
+                         "hiFTBatchReuse": LongTextBenchmarks.reusesHiFT(experimentMode),
                          "headMode": LongTextBenchmarks.headMode(experimentMode) ?? "default-full",
                          "audioArchive": LongTextBenchmarks.audioArchiveName(experimentMode) ?? "none",
                          "attempts": attempts,

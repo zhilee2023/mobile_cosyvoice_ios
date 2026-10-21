@@ -48,7 +48,7 @@ def clear_table_field(data: bytearray, table: int, slot: int) -> None:
     struct.pack_into("<i",data,table,table-position)
 
 
-def append_quant_table(data: bytearray, rows: int) -> int:
+def append_quant_table(data: bytearray, rows: int, bits: int = 8) -> int:
     # IDSTQuan slots 0..11. External buffer and alpha vectors are absent.
     while len(data)%4: data.append(0)
     vtable=len(data)
@@ -58,7 +58,8 @@ def append_quant_table(data: bytearray, rows: int) -> int:
     struct.pack_into("<i",data,table,table-vtable)
     struct.pack_into("<i",data,table+4,1)  # IDST dense quantization
     struct.pack_into("<f",data,table+8,1.0)
-    struct.pack_into("<iii",data,table+12,8,-128,rows)
+    if bits not in (4,8):raise ValueError('Only reviewed W4/W8 codecs')
+    struct.pack_into("<iii",data,table+12,bits,-(1<<(bits-1)),rows)
     data[table+24]=1  # uint32 shape header
     return table
 
@@ -110,9 +111,11 @@ def external_regions(f: FlatBuffer, weight_bytes: int) -> list[dict]:
     return regions
 
 
-def repack(source: Path, destination: Path, mode: str, block: int) -> dict:
+def repack(source: Path, destination: Path, mode: str, block: int, bits: int = 8, algorithm: str = 'rtn', w4_scope: str = 'all-selected') -> dict:
     import numpy as np
     if mode not in (*GROUPS,'fp32','all-w8') or block not in (32,64,128):raise ValueError('Unknown recipe/block')
+    if bits not in (4,8) or algorithm not in ('rtn','hqq') or w4_scope not in ('all-selected','ffn','projections'):raise ValueError('Unreviewed PTQ configuration')
+    if bits==4 and mode not in ('ffn-w8','ffn-qvout-w8'):raise ValueError('W4 screening keeps K and other operators original')
     if destination.exists():raise FileExistsError(destination)
     source_graph=source/FLOW;source_weight=source/(FLOW+".weight")
     original=source_graph.read_bytes();f=FlatBuffer(original);graph=bytearray(original)
@@ -154,12 +157,16 @@ def repack(source: Path, destination: Path, mode: str, block: int) -> dict:
                         if mode=="all-w8": selected=False
                         else: raise ValueError("Selected FFN is not a plain linear")
                 if selected:
-                    payload,alpha,quant_rows,error=encode_w8(weight,oc,block)
+                    use_w4=bits==4 and (w4_scope=='all-selected' or (w4_scope=='ffn' and '/ff/' in region['name']) or (w4_scope=='projections' and projection_group(region['name']) in {'q','v','out'}))
+                    if use_w4:
+                        from flow_w4_ptq import encode_w4
+                        payload,alpha,quant_rows,error=encode_w4(weight,oc,block,algorithm)
+                    else:payload,alpha,quant_rows,error=encode_w8(weight,oc,block)
                     writer.write(payload);writer.write(alpha);writer.write(bias)
                     updated=[offset,len(payload),len(alpha),len(bias),0]
-                    table=append_quant_table(graph,quant_rows)
+                    table=append_quant_table(graph,quant_rows,4 if use_w4 else 8)
                     field=f.field(main,3);struct.pack_into("<I",graph,field,table-field)
-                    kind="w8"
+                    kind="w4" if use_w4 else "w8"
                 elif mode=="fp32":
                     payload=weight.tobytes();writer.write(payload);writer.write(bias)
                     updated=[offset,len(payload),len(bias)]
@@ -177,9 +184,12 @@ def repack(source: Path, destination: Path, mode: str, block: int) -> dict:
     report={"mode":mode,"block":block,"source_hashes":hashes,"source_weight_bytes":source_weight.stat().st_size,
             "candidate_weight_bytes":output_weight.stat().st_size,"graph_sha256":digest(output_graph),
             "weight_sha256":digest(output_weight),"operators":rows,"layout_audit":audit(output_graph),
-            "quantized_operator_count":sum(row['format']=='w8' for row in rows),
+            "quantized_operator_count":sum(row['format'] in ('w4','w8') for row in rows),
             "note":("Decoded FP16 to exact FP32 values, removed encoded-quant metadata; replay acceptance still required" if mode=="fp32" else
                     "Native MNN-compatible dense asymmetric min-max W8; not HQQ, no activation calibration fit, replay acceptance still required")}
+    if bits==4:
+        report.update({'bits':bits,'algorithm':algorithm,'w4_scope':w4_scope,'w4_operators':sum(r['format']=='w4' for r in rows),
+          'w8_operators':sum(r['format']=='w8' for r in rows),'note':'Native IDST W4 packed nibbles, '+algorithm+' weight-only; K and nonselected bytes unchanged; no activation-fit/GPTQ/AWQ; not phone acceptance'})
     (destination/"repack-report.json").write_text(json.dumps(report,indent=2)+"\n",encoding="utf-8")
     return report
 

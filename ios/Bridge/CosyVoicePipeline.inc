@@ -6,12 +6,15 @@ struct PipelineLlmOwner : LlmOwner {
     NSString *_directory;
     NSString *_mode;
     BOOL _useW8;
+    BOOL _projection;
+    BOOL _reuseHiFT;
     NSString *_headMode;
     BOOL _reuseHead;
     NSDictionary *_flowIdentity;
     NSDictionary *_headIdentity;
     PipelineLlmOwner _llm;
     std::unique_ptr<Graph> _flow;
+    std::unique_ptr<HiFTBatchOwner> _hift;
     std::vector<std::vector<int>> _prepared;
     NSArray<NSString *> *_texts;
     size_t _at;
@@ -27,17 +30,19 @@ struct PipelineLlmOwner : LlmOwner {
     @autoreleasepool {
         Trace trace(@"last-pipeline-lifecycle.log"); MemorySampler sampler; trace.sampler=&sampler;
         trace.record([NSString stringWithFormat:@"新整链对照 %@；4线程/Flow High两步/20ms采样；未获长文验收",mode],true);
-        if (![@[@"llm-chain-reuse",@"two-sentence-staged",@"three-sentence-staged",@"six-sentence-staged",@"three-sentence-staged-w8",@"three-sentence-staged-w8-head-full",@"three-sentence-staged-w8-head-reduced",@"three-sentence-staged-w8-head-reduced-reuse"] containsObject:mode])
+        if (![@[@"llm-chain-reuse",@"two-sentence-staged",@"three-sentence-staged",@"six-sentence-staged",@"three-sentence-staged-w8",@"three-sentence-staged-w8-head-full",@"three-sentence-staged-w8-head-reduced",@"three-sentence-staged-w8-head-reduced-reuse",@"three-sentence-staged-projection-head-reuse",@"three-sentence-staged-projection-head-reuse-hift-reuse"] containsObject:mode])
             return result(false,@"未知完整链路实验",trace);
         if (!waitAvailable(2900000000ULL,trace,@"对照启动前")) return result(false,@"初始余量不足；未加载候选模型",trace);
         CosyVoicePipeline *owner=[CosyVoicePipeline new];
         owner->_directory=[directory copy]; owner->_mode=[mode copy];
-        owner->_useW8=[mode hasPrefix:@"three-sentence-staged-w8"];
-        owner->_reuseHead=[mode isEqual:@"three-sentence-staged-w8-head-reduced-reuse"];
+        owner->_projection=[mode hasPrefix:@"three-sentence-staged-projection-"];
+        owner->_reuseHiFT=[mode isEqual:@"three-sentence-staged-projection-head-reuse-hift-reuse"];
+        owner->_useW8=[mode hasPrefix:@"three-sentence-staged-w8"]||owner->_projection;
+        owner->_reuseHead=[mode isEqual:@"three-sentence-staged-w8-head-reduced-reuse"]||owner->_projection;
         owner->_headMode=[mode hasSuffix:@"-head-full"]?@"full":([mode hasSuffix:@"-head-reduced"]||owner->_reuseHead?@"reduced":nil);
         NSString *failure=nil;
         if(owner->_useW8) {
-            owner->_flowIdentity=verifyFlowW8(directory,trace,&failure);
+            owner->_flowIdentity=owner->_projection?verifyFlowProjection(directory,trace,&failure):verifyFlowW8(directory,trace,&failure);
             if(!owner->_flowIdentity)return result(false,failure?:@"W8身份检查失败",trace);
         }
         if(owner->_headMode) {
@@ -78,7 +83,7 @@ struct PipelineLlmOwner : LlmOwner {
         const NSUInteger batchLimit=six?6:(three?3:2);
         trace.record([NSString stringWithFormat:@"最多%lu句分阶段：同一LLM逐句reset KV生成完整EOS token，再释放LLM；此阶段不加载Flow/HiFT",(unsigned long)batchLimit],true);
         if(_at<_prepared.size())return result(false,@"小批仍有未消费句段，不能覆盖token队列",trace);
-        _flow.reset(); _llm.reset(); _prepared.clear(); _texts=nil; _at=0;
+        _hift.reset(); _flow.reset(); _llm.reset(); _prepared.clear(); _texts=nil; _at=0;
         if (_closed || (!six && !three && ![_mode isEqual:@"two-sentence-staged"]) || texts.count<1 || texts.count>batchLimit)
             return result(false,[NSString stringWithFormat:@"只允许本批1–%lu个完整句段",(unsigned long)batchLimit],trace);
         for(id text in texts) if(![text isKindOfClass:NSString.class] || [text length]<1 || [text length]>40)
@@ -123,7 +128,8 @@ struct PipelineLlmOwner : LlmOwner {
         NSMutableDictionary *out=[result(true,[NSString stringWithFormat:@"本批1–%lu句完整EOS token已就绪；无活跃LLM/KV",(unsigned long)batchLimit],trace) mutableCopy];
         out[@"preparedCount"]=@(_prepared.size()); out[@"executionMode"]=_mode;
         out[@"llmRequests"] = llmRows;
-        out[@"flowQuantization"]=_useW8?@"FFN W8/block64":@"original FP16-stored";
+        out[@"flowQuantization"]=_projection?@"FFN+Q/V/out W8/block64; K preserved":(_useW8?@"FFN W8/block64":@"original FP16-stored");
+        out[@"hiFTBatchReuse"]=@(_reuseHiFT);
         out[@"headMode"]=_headMode?:@"default-full";
         out[@"headWeightReuse"] = @(_reuseHead);
         Trace life(@"last-pipeline-lifecycle.log");life.record([NSString stringWithFormat:@"已准备%zu句完整token；LLM已释放，Flow尚未加载；累计LLM请求%lu/复用%lu",_prepared.size(),(unsigned long)_requests,(unsigned long)_reusedRequests]);
@@ -163,8 +169,9 @@ struct PipelineLlmOwner : LlmOwner {
             _flow.reset();return memoryResult(@"复用Flow前余量不足，未执行声学",trace);
         }
         size_t index=_at;
+        if(_reuseHiFT&&!_hift)_hift.reset(new HiFTBatchOwner());
         NSMutableDictionary *out=[[CosyVoiceGenerate runAtDirectory:_directory text:_texts[index] lowPrecisionFlow:NO
-            optimized:YES cpuThreads:4 prepareHiFT:NO resident:_flow.get() lowPrecisionHiFT:low preparedSpeech:&_prepared[index] reuseLlm:nullptr] mutableCopy];
+            optimized:YES cpuThreads:4 prepareHiFT:NO resident:_flow.get() lowPrecisionHiFT:low preparedSpeech:&_prepared[index] reuseLlm:nullptr flowW8:NO reuseHiFT:_hift.get()] mutableCopy];
         _flow->traceLog=nullptr;
         // Include setup and every intermediate phase; never clear sampled dips.
         sampler.stop(trace);
@@ -180,7 +187,11 @@ struct PipelineLlmOwner : LlmOwner {
         bool done=![out[@"success"] boolValue] || _at>=_prepared.size();
         Trace life(@"last-pipeline-lifecycle.log");
         life.record([NSString stringWithFormat:@"声学句%zu；复用Flow=%@；本批创建%lu/复用%lu；小批结束=%@",index+1,reused?@"是":@"否",(unsigned long)_flowCreates,(unsigned long)_flowReuses,done?@"是":@"否"]);
-        if(done) {_flow.reset();_prepared.clear();_texts=nil;_at=0;life.record(@"小批声学结束：唯一Flow与token队列已释放，无活跃LLM");}
+        if(done) {
+            if(_hift)out[@"hiFTBatchFinalLifecycle"]=_hift->metrics();
+            _hift.reset();_flow.reset();_prepared.clear();_texts=nil;_at=0;
+            life.record(@"小批声学结束：唯一Flow、HiFT会话与token队列已释放；下一批LLM前没有HiFT常驻");
+        }
         return out;
     }
 }
@@ -188,17 +199,18 @@ struct PipelineLlmOwner : LlmOwner {
 - (NSDictionary<NSString *,id> *)close {
     std::lock_guard<std::mutex> guard(_lock);
     Trace trace(@"last-pipeline-lifecycle.log");MemorySampler sampler;trace.sampler=&sampler;
-    _flow.reset();_llm.reset();_prepared.clear();_texts=nil;_closed=YES;
+    _hift.reset();_flow.reset();_llm.reset();_prepared.clear();_texts=nil;_closed=YES;
     std::this_thread::sleep_for(std::chrono::milliseconds(150));
     trace.record([NSString stringWithFormat:@"关闭%@；全部会话/跨句KV/token队列已释放；LLM请求%lu/复用%lu，Flow创建%lu/复用%lu，LLM规划释放%lu",_mode,(unsigned long)_requests,(unsigned long)_reusedRequests,(unsigned long)_flowCreates,(unsigned long)_flowReuses,(unsigned long)_budgetReleases]);
     NSMutableDictionary *out=[result(true,@"本批完整链路候选已关闭",trace) mutableCopy];
     out[@"llmRequests"]=@(_requests);out[@"llmReusedRequests"]=@(_reusedRequests);
     out[@"flowCreates"]=@(_flowCreates);out[@"flowReuses"]=@(_flowReuses);out[@"llmBudgetReleases"]=@(_budgetReleases);
-    out[@"flowQuantization"]=_useW8?@"FFN W8/block64":@"original FP16-stored";
+    out[@"flowQuantization"]=_projection?@"FFN+Q/V/out W8/block64; K preserved":(_useW8?@"FFN W8/block64":@"original FP16-stored");
+    out[@"hiFTBatchReuse"]=@(_reuseHiFT);
     out[@"headMode"]=_headMode?:@"default-full";out[@"llmHeadPruned"]=@([_headMode isEqual:@"reduced"]);
     out[@"headWeightReuse"] = @(_reuseHead);
     if(_flowIdentity)out[@"flowIdentity"]=_flowIdentity;if(_headIdentity)out[@"headIdentity"]=_headIdentity;
     return out;
 }
-- (void)dealloc { _flow.reset();_llm.reset(); }
+- (void)dealloc { _hift.reset();_flow.reset();_llm.reset(); }
 @end

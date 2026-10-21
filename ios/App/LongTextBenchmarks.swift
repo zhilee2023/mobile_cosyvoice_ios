@@ -25,18 +25,25 @@ enum LongTextBenchmarks {
     static func batchLimit(_ mode: String?) -> Int {
         switch mode {
         case "two-sentence-staged": return 2
-        case "three-sentence-staged", "three-sentence-staged-w8", "three-sentence-staged-w8-head-full", "three-sentence-staged-w8-head-reduced", "three-sentence-staged-w8-head-reduced-reuse": return 3
+        case "three-sentence-staged", "three-sentence-staged-w8", "three-sentence-staged-w8-head-full", "three-sentence-staged-w8-head-reduced", "three-sentence-staged-w8-head-reduced-reuse", "three-sentence-staged-projection-head-reuse", "three-sentence-staged-projection-head-reuse-hift-reuse": return 3
         case "six-sentence-staged": return 6
         default: return 0
         }
     }
     static func usesW8(_ mode: String?) -> Bool {
-        ["three-sentence-staged-w8", "three-sentence-staged-w8-head-full", "three-sentence-staged-w8-head-reduced", "three-sentence-staged-w8-head-reduced-reuse"].contains(mode ?? "")
+        ["three-sentence-staged-w8", "three-sentence-staged-w8-head-full", "three-sentence-staged-w8-head-reduced", "three-sentence-staged-w8-head-reduced-reuse", "three-sentence-staged-projection-head-reuse", "three-sentence-staged-projection-head-reuse-hift-reuse"].contains(mode ?? "")
+    }
+    static func usesProjection(_ mode: String?) -> Bool {
+        ["three-sentence-staged-projection-head-reuse", "three-sentence-staged-projection-head-reuse-hift-reuse"].contains(mode ?? "")
+    }
+    static func reusesHiFT(_ mode: String?) -> Bool { mode == "three-sentence-staged-projection-head-reuse-hift-reuse" }
+    static func flowRecipe(_ mode: String?) -> String {
+        usesProjection(mode) ? "FFN+Q/V/out W8/block64; K preserved" : (usesW8(mode) ? "FFN W8/block64" : "original FP16-stored")
     }
     static func headMode(_ mode: String?) -> String? {
         switch mode {
         case "three-sentence-staged-w8-head-full": return "full"
-        case "three-sentence-staged-w8-head-reduced", "three-sentence-staged-w8-head-reduced-reuse": return "reduced"
+        case "three-sentence-staged-w8-head-reduced", "three-sentence-staged-w8-head-reduced-reuse", "three-sentence-staged-projection-head-reuse", "three-sentence-staged-projection-head-reuse-hift-reuse": return "reduced"
         default: return nil
         }
     }
@@ -46,6 +53,8 @@ enum LongTextBenchmarks {
         case "three-sentence-staged-w8-head-full": return "输出头配对A/完整W8头/Flow W8"
         case "three-sentence-staged-w8-head-reduced": return "输出头配对B/裁剪W8头/Flow W8"
         case "three-sentence-staged-w8-head-reduced-reuse": return "输出头配对C/裁剪头批内复用/Flow W8"
+        case "three-sentence-staged-projection-head-reuse": return "本轮B/投影W8/HiFT逐句创建"
+        case "three-sentence-staged-projection-head-reuse-hift-reuse": return "本轮C/投影W8/HiFT批内复用"
         default: return nil
         }
     }
@@ -56,6 +65,8 @@ enum LongTextBenchmarks {
         case "three-sentence-staged-w8-head-full": return "end-to-end-head-full.wav"
         case "three-sentence-staged-w8-head-reduced": return "end-to-end-head-reduced.wav"
         case "three-sentence-staged-w8-head-reduced-reuse": return "end-to-end-head-reuse.wav"
+        case "three-sentence-staged-projection-head-reuse": return "end-to-end-projection.wav"
+        case "three-sentence-staged-projection-head-reuse-hift-reuse": return "end-to-end-projection-hift-reuse.wav"
         default: return nil
         }
     }

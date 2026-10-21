@@ -36,8 +36,10 @@ class ProjectionPhone(unittest.TestCase):
 
     def test_no_automatic_generation_promotion(self):
         native=(ROOT/'ios/Bridge/CosyVoicePipeline.inc').read_text(encoding='utf-8')
-        self.assertNotIn('flow-projection-manifest',native)
-        self.assertNotIn('flow-projection-',native)
+        self.assertIn('owner->_projection=[mode hasPrefix:@"three-sentence-staged-projection-"]',native)
+        self.assertIn('owner->_projection?verifyFlowProjection',native)
+        ui=(ROOT/'ios/App/ContentView.swift').read_text(encoding='utf-8')
+        self.assertIn('mode ?? (useW8Flow ? "three-sentence-staged-w8" : "three-sentence-staged")',ui)
         package=(ROOT/'scripts/package_projection_phone.py').read_text(encoding='utf-8')
         self.assertIn('eligible_for_phone_review',package)
         self.assertIn('Bit-exact preservation audit required',package)

@@ -53,6 +53,14 @@ struct SentencePlannerChecks {
         precondition(LongTextBenchmarks.headMode("three-sentence-staged-w8-head-reduced") == "reduced")
         precondition(LongTextBenchmarks.headMode("three-sentence-staged-w8-head-reduced-reuse") == "reduced")
         precondition(!LongTextBenchmarks.usesW8("unknown"))
+        for mode in ["three-sentence-staged-projection-head-reuse", "three-sentence-staged-projection-head-reuse-hift-reuse"] {
+            precondition(LongTextBenchmarks.batchLimit(mode) == 3 && LongTextBenchmarks.usesW8(mode))
+            precondition(LongTextBenchmarks.usesProjection(mode) && LongTextBenchmarks.headMode(mode) == "reduced")
+            precondition(LongTextBenchmarks.audioArchiveName(mode) != nil)
+        }
+        precondition(!LongTextBenchmarks.usesProjection("three-sentence-staged-w8-head-reduced-reuse"))
+        precondition(!LongTextBenchmarks.reusesHiFT("three-sentence-staged-projection-head-reuse"))
+        precondition(LongTextBenchmarks.reusesHiFT("three-sentence-staged-projection-head-reuse-hift-reuse"))
         print("PASS: sentence splitting preserves content, bounds UTF-16, handles emoji/newlines/decimals/retry limits")
     }
 }

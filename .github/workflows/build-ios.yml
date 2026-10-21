@@ -40,6 +40,8 @@ jobs:
           python3 -m unittest discover -s tests -p test_projection_summary.py
           python3 -m unittest discover -s tests -p test_projection_phone.py
           python3 -m unittest discover -s tests -p test_projection_phone_report.py
+          python3 -m unittest discover -s tests -p test_projection_e2e.py
+          python3 -m unittest discover -s tests -p test_projection_e2e_report.py
           clang++ -O2 -fno-exceptions -std=c++17 -Iios/Bridge tests/op_profile_check.cpp -o build-tests/op-profile-check
           build-tests/op-profile-check
           clang++ -O2 -fno-exceptions -std=c++17 -Iios/Bridge tests/speech_head_check.cpp -o build-tests/speech-head-check

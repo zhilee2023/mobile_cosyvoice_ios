@@ -539,6 +539,7 @@ struct Graph {
     }
     void releaseModel() { net->releaseModel(); }
 };
+#include "CosyVoiceHiFTBatch.inc"
 #include "CosyVoiceMetalDiagnostics.inc"
 #include "CosyVoiceMixedAttention.inc"
 int reflected(int index, int length) {
@@ -571,6 +572,7 @@ bool writeWav(const std::vector<float> &samples, NSString *fileName = @"last-gen
 + (NSDictionary<NSString *, id> *)runAtDirectory:(NSString *)directory text:(nullable NSString *)text lowPrecisionFlow:(BOOL)lowPrecision optimized:(BOOL)optimized cpuThreads:(NSInteger)threads prepareHiFT:(BOOL)prepareHiFT resident:(Graph *)resident lowPrecisionHiFT:(BOOL)lowHiFT;
 + (NSDictionary<NSString *, id> *)runAtDirectory:(NSString *)directory text:(nullable NSString *)text lowPrecisionFlow:(BOOL)lowPrecision optimized:(BOOL)optimized cpuThreads:(NSInteger)threads prepareHiFT:(BOOL)prepareHiFT resident:(Graph *)resident lowPrecisionHiFT:(BOOL)lowHiFT preparedSpeech:(const std::vector<int> *)prepared reuseLlm:(LlmOwner *)reusable;
 + (NSDictionary<NSString *, id> *)runAtDirectory:(NSString *)directory text:(nullable NSString *)text lowPrecisionFlow:(BOOL)lowPrecision optimized:(BOOL)optimized cpuThreads:(NSInteger)threads prepareHiFT:(BOOL)prepareHiFT resident:(Graph *)resident lowPrecisionHiFT:(BOOL)lowHiFT preparedSpeech:(const std::vector<int> *)prepared reuseLlm:(LlmOwner *)reusable flowW8:(BOOL)useW8;
++ (NSDictionary<NSString *, id> *)runAtDirectory:(NSString *)directory text:(nullable NSString *)text lowPrecisionFlow:(BOOL)lowPrecision optimized:(BOOL)optimized cpuThreads:(NSInteger)threads prepareHiFT:(BOOL)prepareHiFT resident:(Graph *)resident lowPrecisionHiFT:(BOOL)lowHiFT preparedSpeech:(const std::vector<int> *)prepared reuseLlm:(LlmOwner *)reusable flowW8:(BOOL)useW8 reuseHiFT:(HiFTBatchOwner *)reuseHiFT;
 @end
 
 @implementation CosyVoiceGenerate
@@ -628,11 +630,16 @@ bool writeWav(const std::vector<float> &samples, NSString *fileName = @"last-gen
 }
 
 + (NSDictionary<NSString *, id> *)runAtDirectory:(NSString *)directory text:(nullable NSString *)text lowPrecisionFlow:(BOOL)lowPrecision optimized:(BOOL)optimized cpuThreads:(NSInteger)threads prepareHiFT:(BOOL)prepareHiFT resident:(Graph *)resident lowPrecisionHiFT:(BOOL)lowHiFT preparedSpeech:(const std::vector<int> *)prepared reuseLlm:(LlmOwner *)reusable flowW8:(BOOL)requestedW8 {
+    return [self runAtDirectory:directory text:text lowPrecisionFlow:lowPrecision optimized:optimized cpuThreads:threads prepareHiFT:prepareHiFT resident:resident lowPrecisionHiFT:lowHiFT preparedSpeech:prepared reuseLlm:reusable flowW8:requestedW8 reuseHiFT:nullptr];
+}
++ (NSDictionary<NSString *, id> *)runAtDirectory:(NSString *)directory text:(nullable NSString *)text lowPrecisionFlow:(BOOL)lowPrecision optimized:(BOOL)optimized cpuThreads:(NSInteger)threads prepareHiFT:(BOOL)prepareHiFT resident:(Graph *)resident lowPrecisionHiFT:(BOOL)lowHiFT preparedSpeech:(const std::vector<int> *)prepared reuseLlm:(LlmOwner *)reusable flowW8:(BOOL)requestedW8 reuseHiFT:(HiFTBatchOwner *)reuseHiFT {
     @autoreleasepool {
         Trace trace(prepareHiFT ? @"last-hift-precision.log" : @"last-generation.log");
         std::unique_ptr<MemorySampler> sampling;
         sampling.reset(new MemorySampler()); trace.sampler=sampling.get();
         if (resident) resident->traceLog=&trace;
+        HiFTTraceBinding hiftBinding{reuseHiFT};
+        if(reuseHiFT && (!resident || !prepared || reusable || prepareHiFT)) return result(false,@"HiFT复用仅支持无LLM的有界小批声学",trace);
         const int cpuThreads = std::clamp(int(threads),2,4);
         const bool useW8=requestedW8||(resident&&resident->flowW8);
         NSString *flowLabel = useW8 ? @"Flow FFN W8/block64 CPU High/Memory Low" : (lowPrecision ? @"Flow CPU Low" : @"Flow CPU High");
@@ -644,10 +651,12 @@ bool writeWav(const std::vector<float> &samples, NSString *fileName = @"last-gen
         trace.record([NSString stringWithFormat:@"运行参数：%d CPU 线程；%@；模型精度和两步 Flow 不变",
                       cpuThreads, optimized ? @"优化候选（Flow 32 帧对齐、DSP 查表）" : @"v0.4.1 基线"]);
         NSDictionary *flowIdentity=resident?resident->flowIdentity:nil;
+        const bool projection=[flowIdentity[@"recipe"] isEqual:@"cosyvoice3-flow-projection-w8-g64-v1"];
+        if(projection)flowLabel=@"Flow FFN+Q/V/out W8 CPU High/Memory Low；K保留";
         if(useW8) {
             if(lowPrecision||reusable){return result(false,@"W8整链仅支持Flow High和阶段串行，未开放LLM共驻",trace);}
             if(!flowIdentity) {NSString *failure=nil;flowIdentity=verifyFlowW8(directory,trace,&failure);if(!flowIdentity)return result(false,failure?:@"W8身份检查失败",trace);}
-            trace.record(@"Flow只量化44个FFN线性层，High精度/Memory Low动态整数；其余层不变，无自动原版回退");
+            trace.record(projection?@"显式投影W8整链候选：110个FFN/Q/V/out线性层；K保持原精度，无自动原版回退":@"Flow只量化44个FFN线性层，High精度/Memory Low动态整数；其余层不变，无自动原版回退");
         }
         if(resident && !prepared)trace.record(@"完整常驻入口：真实当前文字，每句重新prefill；唯一384帧Flow复用，最多105 speech token/4.2秒；LLM释放后才运行HiFT");
         if(resident && prepared)trace.record(@"两句小批声学入口：LLM已经释放；仅完整EOS token进入唯一384帧Flow；F0/HiFT逐句运行");
@@ -833,11 +842,17 @@ bool writeWav(const std::vector<float> &samples, NSString *fileName = @"last-gen
         }
         std::vector<float> f0;
         {
-            Graph graph(cpuThreads, optimized);
-            if (!graph.open([directory stringByAppendingPathComponent:@"hift-f0.fp32.mnn"], false, trace, @"HiFT F0"))
+            Graph fresh(cpuThreads, optimized);
+            Graph *selected=reuseHiFT?reuseHiFT->prepare(false,audioFrames,false,cpuThreads,optimized,directory,trace):&fresh;
+            if(!selected)return result(false,@"HiFT F0复用/resize失败",trace);
+            Graph &graph=*selected;
+            if (!reuseHiFT && !graph.open([directory stringByAppendingPathComponent:@"hift-f0.fp32.mnn"], false, trace, @"HiFT F0"))
                 return result(false, @"HiFT F0 会话失败", trace);
-            if (!graph.shape("mel", {1, 80, audioFrames})) return result(false, @"HiFT F0 形状失败", trace);
-            graph.net->resizeSession(graph.session); graph.releaseModel();
+            if (!reuseHiFT) {
+                if (!graph.shape("mel", {1, 80, audioFrames})) return result(false, @"HiFT F0 形状失败", trace);
+                graph.net->resizeSession(graph.session); graph.releaseModel();
+            }
+            if(!sampledBudgetOK(trace))return memoryResult(@"HiFT F0后余量低于800 MB",trace);
             if (!graph.inputFloat("mel", mel) || !graph.run() || !graph.output("f0", audioFrames, f0))
                 return result(false, @"HiFT F0 前向失败", trace);
             trace.record([NSString stringWithFormat:@"HiFT F0 完成；峰值 %.5f", peak(f0)]);
@@ -902,13 +917,16 @@ bool writeWav(const std::vector<float> &samples, NSString *fileName = @"last-gen
         std::vector<float> spectral;
         stageStarted = std::chrono::steady_clock::now();
         {
-            Graph graph(cpuThreads, optimized);
-            if (!graph.open([directory stringByAppendingPathComponent:@"hift-core.fp32.mnn"], false, trace, lowHiFT?@"HiFT core Low":@"HiFT core High", lowHiFT))
+            Graph fresh(cpuThreads, optimized);
+            Graph *selected=reuseHiFT?reuseHiFT->prepare(true,audioFrames,lowHiFT,cpuThreads,optimized,directory,trace):&fresh;
+            if(!selected)return result(false,@"HiFT core复用/resize失败",trace);
+            Graph &graph=*selected;
+            if (!reuseHiFT && !graph.open([directory stringByAppendingPathComponent:@"hift-core.fp32.mnn"], false, trace, lowHiFT?@"HiFT core Low":@"HiFT core High", lowHiFT))
                 return result(false, @"HiFT core 会话失败", trace);
-            if (!(graph.shape("mel", {1, 80, audioFrames}) &&
+            if (!reuseHiFT && !(graph.shape("mel", {1, 80, audioFrames}) &&
                   graph.shape("source_stft", {1, 18, stftFrames})))
                 return result(false, @"HiFT core 输入形状失败", trace);
-            graph.net->resizeSession(graph.session); graph.releaseModel();
+            if(!reuseHiFT){graph.net->resizeSession(graph.session); graph.releaseModel();}
             if (!sampledBudgetOK(trace)) return result(false, @"HiFT resize后当前或采样余量低于800 MB，停止", trace);
             if (!graph.inputFloat("mel", mel) || !graph.inputFloat("source_stft", stft) ||
                 !graph.run() || !graph.output("spectral", 18 * stftFrames, spectral))
@@ -973,7 +991,11 @@ bool writeWav(const std::vector<float> &samples, NSString *fileName = @"last-gen
         completed[@"eosSource"] = prepared ? @"prepared-complete-LLM-output" : (textGeneration ? @"current-LLM-request" : @"fixed-prefix-fixture-not-verified");
         completed[@"llmMetrics"] = llmMetrics;
         completed[@"llmHeldForFlow"] = @(llmHeldForFlow);
-        completed[@"flowQuantization"]=useW8?@"FFN W8/block64":@"original FP16-stored";
+        completed[@"flowQuantization"]=projection?@"FFN+Q/V/out W8/block64; K preserved":(useW8?@"FFN W8/block64":@"original FP16-stored");
+        completed[@"hiFTBatchReuse"]=@(reuseHiFT!=nullptr);
+        if(reuseHiFT)completed[@"hiFTLifecycle"]=reuseHiFT->metrics();
+        completed[@"melSHA256"]=dataSHA256([NSData dataWithBytes:mel.data() length:mel.size()*sizeof(float)]);
+        completed[@"pcmSHA256"]=dataSHA256([NSData dataWithBytes:pcm.data() length:pcm.size()*sizeof(float)]);
         completed[@"flowPrecision"]=lowPrecision?@"Low":@"High";completed[@"flowMemory"]=@"Low";
         completed[@"flowSteps"]=@2;completed[@"llmHeadPruned"]=@NO;
         completed[@"speechTokenSHA256"]=dataSHA256([NSData dataWithBytes:speech.data() length:speech.size()*sizeof(int)]);

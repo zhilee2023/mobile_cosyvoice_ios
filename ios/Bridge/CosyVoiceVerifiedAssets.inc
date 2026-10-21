@@ -46,3 +46,7 @@ NSDictionary *verifySpeechHead(NSString *directory,Trace &trace,CosyVoiceFailure
     return verifySelectedAssets(directory,@"speech-head-manifest",@"cosyvoice3-w8-speech-head-v1",
                                 @[@"sourceGraph",@"sourceWeight",@"candidateGraph",@"candidateWeight"],false,trace,failure);
 }
+NSDictionary *verifyFlowProjection(NSString *directory,Trace &trace,CosyVoiceFailureOutput failure) {
+    return verifySelectedAssets(directory,@"flow-projection-manifest",@"cosyvoice3-flow-projection-w8-g64-v1",
+                                @[@"candidateGraph",@"candidateWeight"],true,trace,failure);
+}
