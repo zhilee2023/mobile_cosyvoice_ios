@@ -61,6 +61,11 @@ struct SentencePlannerChecks {
         precondition(!LongTextBenchmarks.usesProjection("three-sentence-staged-w8-head-reduced-reuse"))
         precondition(!LongTextBenchmarks.reusesHiFT("three-sentence-staged-projection-head-reuse"))
         precondition(LongTextBenchmarks.reusesHiFT("three-sentence-staged-projection-head-reuse-hift-reuse"))
+        let awq = LongTextBenchmarks.awqMode
+        precondition(LongTextBenchmarks.usesAwq(awq) && LongTextBenchmarks.batchLimit(awq) == 3)
+        precondition(LongTextBenchmarks.usesW8(awq) && !LongTextBenchmarks.usesProjection(awq))
+        precondition(LongTextBenchmarks.reusesHiFT(awq) && LongTextBenchmarks.headMode(awq) == "reduced")
+        precondition(LongTextBenchmarks.audioArchiveName(awq) == "end-to-end-awq.wav")
         print("PASS: sentence splitting preserves content, bounds UTF-16, handles emoji/newlines/decimals/retry limits")
     }
 }

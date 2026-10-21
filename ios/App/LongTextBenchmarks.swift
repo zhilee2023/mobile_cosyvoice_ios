@@ -1,6 +1,8 @@
 import Foundation
 
 enum LongTextBenchmarks {
+    static let awqMode = "three-sentence-staged-awq-head-reuse-hift-reuse"
+    static func usesAwq(_ mode: String?) -> Bool { mode == awqMode }
     static var fiveSentenceText: String { sentences.prefix(5).joined() }
     // Twelve different sentences, each within the EXISTING 18-UTF16 planner
     // limit. Double the passage for the long run; duration is measured, not set.
@@ -23,6 +25,7 @@ enum LongTextBenchmarks {
         return Array(repeating: sentences.joined(), count: passages).joined()
     }
     static func batchLimit(_ mode: String?) -> Int {
+        if usesAwq(mode) { return 3 }
         switch mode {
         case "two-sentence-staged": return 2
         case "three-sentence-staged", "three-sentence-staged-w8", "three-sentence-staged-w8-head-full", "three-sentence-staged-w8-head-reduced", "three-sentence-staged-w8-head-reduced-reuse", "three-sentence-staged-projection-head-reuse", "three-sentence-staged-projection-head-reuse-hift-reuse": return 3
@@ -31,16 +34,17 @@ enum LongTextBenchmarks {
         }
     }
     static func usesW8(_ mode: String?) -> Bool {
-        ["three-sentence-staged-w8", "three-sentence-staged-w8-head-full", "three-sentence-staged-w8-head-reduced", "three-sentence-staged-w8-head-reduced-reuse", "three-sentence-staged-projection-head-reuse", "three-sentence-staged-projection-head-reuse-hift-reuse"].contains(mode ?? "")
+        usesAwq(mode) || ["three-sentence-staged-w8", "three-sentence-staged-w8-head-full", "three-sentence-staged-w8-head-reduced", "three-sentence-staged-w8-head-reduced-reuse", "three-sentence-staged-projection-head-reuse", "three-sentence-staged-projection-head-reuse-hift-reuse"].contains(mode ?? "")
     }
     static func usesProjection(_ mode: String?) -> Bool {
         ["three-sentence-staged-projection-head-reuse", "three-sentence-staged-projection-head-reuse-hift-reuse"].contains(mode ?? "")
     }
-    static func reusesHiFT(_ mode: String?) -> Bool { mode == "three-sentence-staged-projection-head-reuse-hift-reuse" }
+    static func reusesHiFT(_ mode: String?) -> Bool { usesAwq(mode) || mode == "three-sentence-staged-projection-head-reuse-hift-reuse" }
     static func flowRecipe(_ mode: String?) -> String {
-        usesProjection(mode) ? "FFN+Q/V/out W8/block64; K preserved" : (usesW8(mode) ? "FFN W8/block64" : "original FP16-stored")
+        usesAwq(mode) ? "AWQ FFN W4/g32 scaling+clipping; Q/V/out W8/g64; K preserved" : (usesProjection(mode) ? "FFN+Q/V/out W8/block64; K preserved" : (usesW8(mode) ? "FFN W8/block64" : "original FP16-stored"))
     }
     static func headMode(_ mode: String?) -> String? {
+        if usesAwq(mode) { return "reduced" }
         switch mode {
         case "three-sentence-staged-w8-head-full": return "full"
         case "three-sentence-staged-w8-head-reduced", "three-sentence-staged-w8-head-reduced-reuse", "three-sentence-staged-projection-head-reuse", "three-sentence-staged-projection-head-reuse-hift-reuse": return "reduced"
@@ -48,6 +52,7 @@ enum LongTextBenchmarks {
         }
     }
     static func title(_ mode: String?) -> String? {
+        if usesAwq(mode) { return "AWQ W4实验/裁剪头复用/HiFT批内复用" }
         switch mode {
         case "three-sentence-staged-w8": return "Flow W8完整生成/三句批量"
         case "three-sentence-staged-w8-head-full": return "输出头配对A/完整W8头/Flow W8"
@@ -59,6 +64,7 @@ enum LongTextBenchmarks {
         }
     }
     static func audioArchiveName(_ mode: String?) -> String? {
+        if usesAwq(mode) { return "end-to-end-awq.wav" }
         switch mode {
         case "three-sentence-staged": return "end-to-end-original.wav"
         case "three-sentence-staged-w8": return "end-to-end-flow-w8.wav"

@@ -16,6 +16,8 @@ final class ModelStore: ObservableObject {
     @Published private(set) var mismatched: [String] = []
     @Published private(set) var directory: URL
     @Published private(set) var status = "检查中"
+    @Published private(set) var awqReady = false
+    @Published private(set) var awqStatus = "AWQ可选模型尚未导入"
 
     var ready: Bool { total > 0 && found == total && mismatched.isEmpty }
 
@@ -59,5 +61,21 @@ final class ModelStore: ObservableObject {
         }
         found = total - missing.count - mismatched.count
         status = ready ? "\(total)/\(total) 文件大小匹配；尚未完成真机推理验证" : "已识别 \(found)/\(total)；缺失 \(missing.count)，大小不符 \(mismatched.count)"
+        awqReady = false
+        guard let awqURL = Bundle.main.url(forResource: "flow-awq-manifest", withExtension: "json"),
+              let awqData = try? Data(contentsOf: awqURL),
+              let awqManifest = (try? JSONSerialization.jsonObject(with: awqData)) as? [String: Any],
+              let files = awqManifest["files"] as? [String: [String: Any]] else {
+            awqStatus = "App缺少AWQ身份清单"; return
+        }
+        let matched = ["candidateGraph", "candidateWeight"].filter { key in
+            guard let entry = files[key], let name = entry["file"] as? String,
+                  let bytes = entry["bytes"] as? NSNumber,
+                  let attributes = try? manager.attributesOfItem(atPath: directory.appendingPathComponent(name).path),
+                  let size = attributes[.size] as? NSNumber else { return false }
+            return size.int64Value == bytes.int64Value
+        }.count
+        awqReady = matched == 2
+        awqStatus = "AWQ \(matched)/2 文件大小匹配；另需约489 MB；生成前校验SHA256"
     }
 }

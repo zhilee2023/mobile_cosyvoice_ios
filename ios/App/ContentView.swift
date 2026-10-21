@@ -34,6 +34,7 @@ struct ContentView: View {
                 }
                 Section("模型") {
                     Text(models.status)
+                    Text(models.awqStatus).font(.caption).foregroundStyle(.secondary)
                     Button("刷新文件") { models.refresh() }.disabled(busy)
                     if !models.missing.isEmpty {
                         Text("缺少：\(models.missing.prefix(3).joined(separator: "、"))")
@@ -93,7 +94,7 @@ struct ContentView: View {
                 Section("新整链对照 · 待真机验收") {
                     ForEach(ExperimentCatalog.available.filter { $0.execution == .sentence }, id: \.id) { route in
                         Button(route.title) { startSentences(mode: route.id) }
-                            .disabled(!models.ready || busy || text.isEmpty)
+                            .disabled(!models.ready || busy || text.isEmpty || (LongTextBenchmarks.usesAwq(route.id) && !models.awqReady))
                         Text(route.conclusion).font(.caption).foregroundStyle(.secondary)
                     }
                     ForEach(ExperimentCatalog.planned, id: \.id) { route in
@@ -102,7 +103,11 @@ struct ContentView: View {
                     }
                     Text("生成仍用完整EOS、Flow High两步与HiFT Low；800MB底线不变。预加载只是播放策略，不开启全模型常驻。")
                         .font(.caption).foregroundStyle(.secondary)
-                    Text("本轮A旧FFN W8 → B投影W8 → C投影W8＋HiFT批内复用；固定相同五句/逐句seed，均裁剪输出头并批内复用LLM，全部生成后播放。每组前退出重开并降温，只发同一份JSON。正常生成按钮仍保持原配方。")
+                    Button("AWQ W4 · 生成当前文字（实验）") { startSentences(mode: LongTextBenchmarks.awqMode, useCurrentText: true) }
+                        .disabled(!models.ready || !models.awqReady || busy || text.isEmpty)
+                    Text("先冷启动测W8五句，再重开降温测AWQ五句；相同seed、裁剪头、HiFT Low批内复用、全部生成后播放。AWQ当前文字入口使用编辑框内容，按句生成。正常生成按钮仍保持原配方。")
+                        .font(.caption).foregroundStyle(.secondary)
+                    Text("AWQ已获PC试听认可，但数值门槛未通过，真机速度/音质/内存仍待验证。将flow-awq-ffn-w4-g32-clipped.mnn和同名.weight导入现有模型目录；不替换W8，不导入ZIP。")
                         .font(.caption).foregroundStyle(.secondary)
                 }
                 Section("统一测试报告 · 只发这一个") {
@@ -112,7 +117,7 @@ struct ContentView: View {
                         .font(.caption).foregroundStyle(.secondary)
                 }
                 Section("播放与日志") {
-                    ForEach([("end-to-end-original.wav", "原版整链"), ("end-to-end-flow-w8.wav", "Flow W8整链"), ("end-to-end-head-reuse.wav", "本轮A · FFN W8基线"), ("end-to-end-projection.wav", "本轮B · 投影W8"), ("end-to-end-projection-hift-reuse.wav", "本轮C · 投影W8＋HiFT复用")], id: \.0) { item in
+                    ForEach([("end-to-end-original.wav", "原版整链"), ("end-to-end-flow-w8.wav", "Flow W8整链"), ("end-to-end-head-reuse.wav", "旧FFN W8基线"), ("end-to-end-projection.wav", "旧投影W8"), ("end-to-end-projection-hift-reuse.wav", "W8对照＋HiFT复用"), ("end-to-end-awq.wav", "AWQ W4实验")], id: \.0) { item in
                         let url = SentenceStream.documents.appendingPathComponent(item.0)
                         if exists(url) {
                             Button("试听最近成功：\(item.1)") { play(url) }.disabled(busy)
@@ -160,11 +165,12 @@ struct ContentView: View {
         }
     }
     private func exists(_ url: URL) -> Bool { FileManager.default.fileExists(atPath: url.path) }
-    private func startSentences(mode: String? = nil) {
+    private func startSentences(mode: String? = nil, useCurrentText: Bool = false) {
         wavPlayer?.stop()
         let actualMode = mode ?? (useW8Flow ? "three-sentence-staged-w8" : "three-sentence-staged")
         let headPair = LongTextBenchmarks.headMode(actualMode) != nil
-        sentences.start(text: headPair ? LongTextBenchmarks.fiveSentenceText : text, directory: models.directory.path, optimized: true,
+        let fixedBenchmark = headPair && !useCurrentText
+        sentences.start(text: fixedBenchmark ? LongTextBenchmarks.fiveSentenceText : text, directory: models.directory.path, optimized: true,
                         threads: threads, player: player, resident: false, lowHiFT: headPair ? true : lowHiFT,
                         experimentMode: actualMode, playbackMode: headPair ? .complete : playbackMode)
     }

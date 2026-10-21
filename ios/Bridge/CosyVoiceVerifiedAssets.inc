@@ -50,3 +50,21 @@ NSDictionary *verifyFlowProjection(NSString *directory,Trace &trace,CosyVoiceFai
     return verifySelectedAssets(directory,@"flow-projection-manifest",@"cosyvoice3-flow-projection-w8-g64-v1",
                                 @[@"candidateGraph",@"candidateWeight"],true,trace,failure);
 }
+NSDictionary *verifyFlowAwq(NSString *directory,Trace &trace,CosyVoiceFailureOutput failure) {
+    NSDictionary *verified=verifySelectedAssets(directory,@"flow-awq-manifest",@"cosyvoice3-flow-awq-ffn-w4-g32-clipped-v1",
+                                                @[@"candidateGraph",@"candidateWeight"],true,trace,failure);
+    if(!verified)return nil;
+    NSURL *url=[NSBundle.mainBundle URLForResource:@"flow-awq-manifest" withExtension:@"json"];
+    NSData *data=url?[NSData dataWithContentsOfURL:url]:nil;
+    NSDictionary *review=data?[NSJSONSerialization JSONObjectWithData:data options:0 error:nil]:nil;
+    if(![review isKindOfClass:NSDictionary.class]||![review[@"experimentalOnly"] boolValue]||
+       ![review[@"userListeningReviewed"] boolValue]||[review[@"pcNumericScreenPassed"] boolValue]) {
+        *failure=@"AWQ实验审批状态不匹配，未加载模型";return nil;
+    }
+    NSMutableDictionary *out=[verified mutableCopy];
+    for(NSString *key in @[@"pcNumericScreenPassed",@"userListeningReviewed",@"experimentalOnly",@"pcScreen",
+                          @"ffnW4Operators",@"projectionW8Operators",@"inverseScaleOperators",@"listeningScope"])
+        if(review[key])out[key]=review[key];
+    trace.record(@"AWQ显式实验：44 FFN W4/g32＋缩放/裁剪，66投影W8，K保留；用户认可PC试听，数值门槛未通过，真机未验收；无自动W8回退");
+    return out;
+}

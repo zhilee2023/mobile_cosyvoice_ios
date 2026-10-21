@@ -36,7 +36,8 @@ class EndToEndRoutes(unittest.TestCase):
 
     def test_paired_ui_uses_five_complete_sentences(self):
         ui=(ROOT/'ios/App/ContentView.swift').read_text(encoding='utf-8')
-        self.assertIn('headPair ? LongTextBenchmarks.fiveSentenceText : text',ui)
+        self.assertIn('let fixedBenchmark = headPair && !useCurrentText',ui)
+        self.assertIn('fixedBenchmark ? LongTextBenchmarks.fiveSentenceText : text',ui)
         self.assertIn('headPair ? .complete : playbackMode',ui)
         stream=(ROOT/'ios/App/SentenceStream.swift').read_text(encoding='utf-8')
         self.assertIn('LongTextBenchmarks.audioArchiveName(experimentMode)',stream)

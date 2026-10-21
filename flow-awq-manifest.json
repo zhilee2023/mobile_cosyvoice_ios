@@ -1,0 +1,71 @@
+{
+  "schemaVersion": 1,
+  "recipe": "cosyvoice3-flow-awq-ffn-w4-g32-clipped-v1",
+  "candidateMode": "awq-ffn-g32-clipped",
+  "files": {
+    "candidateGraph": {
+      "file": "flow-awq-ffn-w4-g32-clipped.mnn",
+      "bytes": 1972992,
+      "sha256": "2c57acab8eae06f3a11c09d49a13c27a8e6333891347d3e7678d4e2d73de6fbe"
+    },
+    "candidateWeight": {
+      "file": "flow-awq-ffn-w4-g32-clipped.mnn.weight",
+      "bytes": 487373388,
+      "sha256": "2404ace0f9fa511ccffb1a6e65d6a1dd7a19af216369eb793bde72ac9630799c"
+    }
+  },
+  "byteOrder": "little-endian",
+  "awqAdaptation": "CosyVoice per-linear duo scaling + activation-aware clipping; native IDST W4; not upstream CLI bit-exact",
+  "ffnW4Operators": 44,
+  "projectionW8Operators": 66,
+  "preservedFP16Operators": 81,
+  "inverseScaleOperators": 44,
+  "baseHashes": {
+    "graph": "79b0b28e341aabab0198ef60da4402181f1b4dc9c9ff062e20b60d2712221815",
+    "weight": "884b43e1fae71b55e2ce31aaf199434da9fb64429047a8eb771e34f903ea9205"
+  },
+  "originalSourceHashes": {
+    "graph": "b74ece0a1a2e165eef53dbc8d628310a1b464323d4729959069744baecf418d7",
+    "weight": "e8d363544063702a9da0800f3a2bbba5669ea719943a5de15a8b08b0f28d24bc"
+  },
+  "pcReportSHA256": "a60a45e5b613fe564fae8ad59db44c17b1c0a5340c0255920015f8ba69046330",
+  "independentAuditSHA256": "45d8eea99215fec43254af62e2e98a80adf88bcf274faf967aee9c2f6e2daebb",
+  "pcNumericScreenPassed": false,
+  "pcScreen": {
+    "state": "completed",
+    "memory_mode": "low",
+    "session_config": {
+      "backend": "CPU",
+      "precision": 1,
+      "memory": 2,
+      "numThread": 4
+    },
+    "calibration": {
+      "cases": 20,
+      "max_teacher_velocity_l2": 0.056964433833423284,
+      "max_closed_loop_mel_l2": 0.04600409667915292,
+      "mean_closed_loop_mel_l2": 0.030013418306374922,
+      "screen_pass": false
+    },
+    "validation": {
+      "cases": 5,
+      "max_teacher_velocity_l2": 0.0529327415577577,
+      "max_closed_loop_mel_l2": 0.03361296179513405,
+      "mean_closed_loop_mel_l2": 0.02764720483031493,
+      "screen_pass": false
+    }
+  },
+  "unchangedNumericGates": {
+    "max_teacher_velocity_l2": 0.03,
+    "max_closed_loop_mel_l2": 0.03,
+    "mean_closed_loop_mel_l2": 0.015
+  },
+  "userListeningReviewed": true,
+  "listenedCase": "zh-heldout",
+  "listenedAudioSHA256": "38241fc4aa371c3c5a62ca44ce68c9ffd3c2c82af7469588c14400128d7d706c",
+  "listeningScope": "User accepted this 4.24-second PC clip with High HiFT; not iPhone HiFT Low or broad listening acceptance",
+  "phoneValidated": false,
+  "automaticPromotion": false,
+  "experimentalOnly": true,
+  "scope": "Explicit opt-in CPU High/Memory Low two-step Flow, pruned-head batch LLM and bounded HiFT Low reuse. W8 baseline preserved."
+}

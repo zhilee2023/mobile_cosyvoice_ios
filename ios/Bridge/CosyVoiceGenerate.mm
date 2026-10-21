@@ -642,7 +642,10 @@ bool writeWav(const std::vector<float> &samples, NSString *fileName = @"last-gen
         if(reuseHiFT && (!resident || !prepared || reusable || prepareHiFT)) return result(false,@"HiFT复用仅支持无LLM的有界小批声学",trace);
         const int cpuThreads = std::clamp(int(threads),2,4);
         const bool useW8=requestedW8||(resident&&resident->flowW8);
+        NSDictionary *flowIdentity=resident?resident->flowIdentity:nil;
+        const bool awq=[flowIdentity[@"recipe"] isEqual:@"cosyvoice3-flow-awq-ffn-w4-g32-clipped-v1"];
         NSString *flowLabel = useW8 ? @"Flow FFN W8/block64 CPU High/Memory Low" : (lowPrecision ? @"Flow CPU Low" : @"Flow CPU High");
+        if(awq)flowLabel=@"Flow AWQ FFN W4/g32＋投影W8 CPU High/Memory Low";
         const bool textGeneration = text != nil;
         trace.record([NSString stringWithFormat:@"HiFT配置：F0=High，core=%@；Flow精度不随HiFT变化；20ms采样/最低余量800 MB",lowHiFT?@"Low":@"High"], true);
         trace.record([NSString stringWithFormat:@"开始：%@ → Conditioner CPU High → %@ → HiFT F0 High/core %@；串行生成 WAV",
@@ -650,13 +653,12 @@ bool writeWav(const std::vector<float> &samples, NSString *fileName = @"last-gen
                       (prepared ? @"本小批已正常EOS的speech token（本次不重跑LLM）" : (textGeneration ? @"当前文字→手机 LLM" : @"固定 25 个 PC speech token（不运行手机文字 LLM）")), flowLabel,lowHiFT?@"Low":@"High"]);
         trace.record([NSString stringWithFormat:@"运行参数：%d CPU 线程；%@；模型精度和两步 Flow 不变",
                       cpuThreads, optimized ? @"优化候选（Flow 32 帧对齐、DSP 查表）" : @"v0.4.1 基线"]);
-        NSDictionary *flowIdentity=resident?resident->flowIdentity:nil;
         const bool projection=[flowIdentity[@"recipe"] isEqual:@"cosyvoice3-flow-projection-w8-g64-v1"];
         if(projection)flowLabel=@"Flow FFN+Q/V/out W8 CPU High/Memory Low；K保留";
         if(useW8) {
             if(lowPrecision||reusable){return result(false,@"W8整链仅支持Flow High和阶段串行，未开放LLM共驻",trace);}
             if(!flowIdentity) {NSString *failure=nil;flowIdentity=verifyFlowW8(directory,trace,&failure);if(!flowIdentity)return result(false,failure?:@"W8身份检查失败",trace);}
-            trace.record(projection?@"显式投影W8整链候选：110个FFN/Q/V/out线性层；K保持原精度，无自动原版回退":@"Flow只量化44个FFN线性层，High精度/Memory Low动态整数；其余层不变，无自动原版回退");
+            trace.record(awq?@"AWQ实验：44 FFN W4/g32、66投影W8/g64、44逆缩放；用户认可PC试听，但数值筛查未通过，不宣称真机性能/音质验收":(projection?@"显式投影W8整链候选：110个FFN/Q/V/out线性层；K保持原精度，无自动原版回退":@"Flow只量化44个FFN线性层，High精度/Memory Low动态整数；其余层不变，无自动原版回退"));
         }
         if(resident && !prepared)trace.record(@"完整常驻入口：真实当前文字，每句重新prefill；唯一384帧Flow复用，最多105 speech token/4.2秒；LLM释放后才运行HiFT");
         if(resident && prepared)trace.record(@"两句小批声学入口：LLM已经释放；仅完整EOS token进入唯一384帧Flow；F0/HiFT逐句运行");
@@ -991,7 +993,8 @@ bool writeWav(const std::vector<float> &samples, NSString *fileName = @"last-gen
         completed[@"eosSource"] = prepared ? @"prepared-complete-LLM-output" : (textGeneration ? @"current-LLM-request" : @"fixed-prefix-fixture-not-verified");
         completed[@"llmMetrics"] = llmMetrics;
         completed[@"llmHeldForFlow"] = @(llmHeldForFlow);
-        completed[@"flowQuantization"]=projection?@"FFN+Q/V/out W8/block64; K preserved":(useW8?@"FFN W8/block64":@"original FP16-stored");
+        completed[@"flowQuantization"]=awq?@"AWQ FFN W4/g32 scaling+clipping; Q/V/out W8/g64; K preserved":(projection?@"FFN+Q/V/out W8/block64; K preserved":(useW8?@"FFN W8/block64":@"original FP16-stored"));
+        if(awq){completed[@"pcNumericScreenPassed"]=@NO;completed[@"userListeningReviewed"]=@YES;completed[@"experimentalOnly"]=@YES;}
         completed[@"hiFTBatchReuse"]=@(reuseHiFT!=nullptr);
         if(reuseHiFT)completed[@"hiFTLifecycle"]=reuseHiFT->metrics();
         completed[@"melSHA256"]=dataSHA256([NSData dataWithBytes:mel.data() length:mel.size()*sizeof(float)]);
