@@ -78,16 +78,16 @@ struct ContentView: View {
                   Section("待验证实验 · 分模块测试") {
                     ForEach(ExperimentRunner.routes, id: \.id) { route in
                         Button(route.title) { startExperiments([route.id]) }
-                            .disabled(!models.ready || busy)
+                            .disabled(!models.ready || busy || (route.id == "flow-awq-profile" && !models.awqReady))
                     }
                     Button("当前路线返回后停止") { experiments.stop() }
                         .disabled(!experiments.isRunning)
                     Text(experiments.status).font(.caption).textSelection(.enabled)
-                    Text("先①原FFN五条参考，冷启动降温后再②投影W8候选。复用已有FFN模型和flow-w8-fixtures.f32.bin；额外导入候选的.mnn和.weight两个文件，不替换原模型。")
+                    Text("先测投影W8热点，关闭App并降温冷启动后，再测AWQ热点。复用已有两套模型与flow-w8-fixtures.f32.bin，不需重下权重。两个入口都完成后只分享一个统一报告。")
                         .font(.caption).foregroundStyle(.secondary)
-                    Text("每项独立加载一个CPU Flow，无LLM/HiFT。五条均含首次与两次预热；候选必须匹配同版本、输入、权重和参考Mel的SHA256。只分享同一个统一报告。")
+                    Text("每项只有一个CPU Flow，无LLM/HiFT；同一批五条输入分别测首次、预热和回调。记录Scale、布局、线性层等热点；回调开销单列，不当普通推理耗时或整链RTF。")
                         .font(.caption).foregroundStyle(.secondary)
-                    Text("GPU High冷启动内存门槛未通过、CPU热点已定位，旧按钮已归档。新候选只是模块筛查；不宣称音质、流式或整链RTF通过，800MB采样底线不变。")
+                    Text("当前完整生成的LLM、Conditioner、Flow、F0、HiFT均走CPU；Metal旧实验已归档。AWQ数值筛查未过标记保留，800MB采样底线不变；热点完成不等于音质或长文验收。")
                         .font(.caption).foregroundStyle(.secondary)
                   }
                 }

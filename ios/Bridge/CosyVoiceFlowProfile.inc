@@ -1,13 +1,21 @@
 // CPU-only observational profile: no intermediate tensor reads, no new weights.
-if([route isEqual:@"flow-w8-profile"]||[route isEqual:@"flow-w8-metal-high"]) {
+if([route isEqual:@"flow-w8-profile"]||[route isEqual:@"flow-w8-metal-high"]||
+   [route isEqual:@"flow-projection-profile"]||[route isEqual:@"flow-awq-profile"]) {
     const bool gpu=[route isEqual:@"flow-w8-metal-high"];
+    const bool awq=[route isEqual:@"flow-awq-profile"];
+    const bool current=awq||[route isEqual:@"flow-projection-profile"];
     NSString *failure=nil;
-    NSDictionary *identity=verifySelectedAssets(directory,@"flow-w8-manifest",@"cosyvoice3-flow-ffn-w8-g64-v1",
-        @[@"candidateGraph",@"candidateWeight",@"fixtures"],true,trace,&failure);
+    NSString *fixtureResource=current?@"flow-projection-manifest":@"flow-w8-manifest";
+    NSDictionary *fixtureIdentity=verifySelectedAssets(directory,fixtureResource,
+        current?@"cosyvoice3-flow-projection-w8-g64-v1":@"cosyvoice3-flow-ffn-w8-g64-v1",
+        @[@"fixtures"],true,trace,&failure);
+    if(!fixtureIdentity)return finish(false,failure?:@"固定输入身份校验失败");
+    NSDictionary *identity=awq?verifyFlowAwq(directory,trace,&failure):
+        (current?verifyFlowProjection(directory,trace,&failure):verifyFlowW8(directory,trace,&failure));
     if(!identity)return finish(false,failure?:@"身份校验失败");
-    NSData *data=[NSData dataWithContentsOfURL:[NSBundle.mainBundle URLForResource:@"flow-w8-manifest" withExtension:@"json"]];
+    NSData *data=[NSData dataWithContentsOfURL:[NSBundle.mainBundle URLForResource:fixtureResource withExtension:@"json"]];
     NSDictionary *manifest=data?[NSJSONSerialization JSONObjectWithData:data options:0 error:nil]:nil;
-    NSData *fixture=[NSData dataWithContentsOfFile:[directory stringByAppendingPathComponent:identity[@"files"][@"fixtures"][@"file"]]];
+    NSData *fixture=[NSData dataWithContentsOfFile:[directory stringByAppendingPathComponent:fixtureIdentity[@"files"][@"fixtures"][@"file"]]];
     NSArray *cases=manifest[@"cases"];
     if(!fixture||![cases isKindOfClass:NSArray.class]||cases.count!=5||![manifest[@"byteOrder"] isEqual:@"little-endian"])
         return finish(false,@"需要已校验的五条固定输入");
@@ -83,7 +91,7 @@ if([route isEqual:@"flow-w8-profile"]||[route isEqual:@"flow-w8-metal-high"]) {
     }
     bool ok=[&]()->bool {
         Graph flow(4,true);
-        if(!flow.open([directory stringByAppendingPathComponent:identity[@"files"][@"candidateGraph"][@"file"]],false,trace,@"Flow W8 CPU热点",false,false,false,false,true)) {
+        if(!flow.open([directory stringByAppendingPathComponent:identity[@"files"][@"candidateGraph"][@"file"]],false,trace,awq?@"Flow AWQ CPU热点":@"Flow W8 CPU热点",false,false,false,false,true)) {
             failure=@"Flow创建失败";return false;
         }
         // Keep graph buffer until all variable-shape cases finish, one session.
@@ -95,21 +103,28 @@ if([route isEqual:@"flow-w8-profile"]||[route isEqual:@"flow-w8-metal-high"]) {
             std::vector<float> initial,mask,mu,spks,cond;
             if(!section(entry,@"x",80*n,initial)||!section(entry,@"mask",n,mask)||!section(entry,@"mu",80*n,mu)||!section(entry,@"spks",80,spks)||!section(entry,@"cond",80*n,cond)) {failure=@"固定输入切片失败";return false;}
             NSMutableDictionary *row=[@{@"caseID":entry[@"id"],@"frames":@(n),@"effectiveFrames":@(effective),@"identity":identity,
+                @"fixtureIdentity":fixtureIdentity,@"inputSections":entry[@"sections"],@"times":times,@"deltas":deltas,
+                @"audioSeconds":entry[@"audioSeconds"],@"requestedBackend":@"CPU",@"gpuRequested":@NO,
+                @"llmRun":@NO,@"hiFTRun":@NO,@"experimentalOnly":@(awq),
                 @"diagnosticOnly":@YES,@"timingIsWholeChainRTF":@NO,@"precision":@"High",@"memory":@"Low",@"threads":@4,
                 @"thermalStart":@(NSProcessInfo.processInfo.thermalState),@"status":@"started"} mutableCopy];[rows addObject:row];
             auto setup=std::chrono::steady_clock::now();
             if(!(flow.shape("x",{1,80,n})&&flow.shape("mu",{1,80,n})&&flow.shape("cond",{1,80,n})&&flow.shape("mask",{1,1,n})&&flow.shape("spks",{1,80})&&flow.shape("t",{1}))) {failure=@"Flow形状设置失败";return false;}
             flow.net->resizeSession(flow.session);row[@"resizeSeconds"]=@(secondsSince(setup));
             const int backend=flow.mainBackend();row[@"mainBackend"]=@(backend);
+            if(backend!=MNN_FORWARD_CPU){failure=@"热点路线主后端不是CPU，未作为CPU热点结果";return false;}
             if(!sampledBudgetOK(trace)||os_proc_available_memory()<1100000000ULL){failure=@"resize后余量不足1100MB，未前向";return false;}
-            std::vector<float> reference;
+            std::vector<float> reference,first;
             // First and warm ordinary runs, THEN one profiled two-step run.
             for(int run=0;run<3;++run) {
                 const bool profiled=run==2;auto x=initial;CosyVoiceOpProfile::Summary stats;
+                double inputTotal=0,runTotal=0,readTotal=0;
                 const auto start=std::chrono::steady_clock::now();
                 for(int step=0;step<2;++step) {
                     if(!sampledBudgetOK(trace)){failure=@"800MB采样保护停止";return false;}
+                    auto partStart=std::chrono::steady_clock::now();
                     if(!(flow.inputFloat("x",x)&&flow.inputFloat("mask",mask)&&flow.inputFloat("mu",mu)&&flow.inputFloat("spks",spks)&&flow.inputFloat("cond",cond)&&flow.inputFloat("t",{[times[step] floatValue]}))) {failure=@"Flow六输入复制失败";return false;}
+                    inputTotal+=secondsSince(partStart);partStart=std::chrono::steady_clock::now();
                     if(profiled) {
                         const size_t callsBefore=stats.calls;
                         auto opStart=std::chrono::steady_clock::now();bool active=false,stopped=false;
@@ -122,21 +137,33 @@ if([route isEqual:@"flow-w8-profile"]||[route isEqual:@"flow-w8-metal-high"]) {
                         const auto code=flow.net->runSessionWithCallBackInfo(flow.session,before,after,true);
                         if(code!=MNN::NO_ERROR||stopped||active||stats.calls<=callsBefore){failure=@"回调未执行/超时/元数据上限/800MB保护，未计成功";return false;}
                     } else if(!flow.run()){failure=@"普通Flow前向失败";return false;}
+                    runTotal+=secondsSince(partStart);partStart=std::chrono::steady_clock::now();
                     std::vector<float> velocity;
                     if(!flow.output("estimator_out",x.size(),velocity)){failure=@"输出形状或非有限值失败";return false;}
+                    readTotal+=secondsSince(partStart);
                     for(size_t i=0;i<x.size();++i)x[i]+=[deltas[step] floatValue]*velocity[i];
                     if(!finite(x)||!sampledBudgetOK(trace)){failure=@"latent有限值/800MB门槛失败";return false;}
                 }
                 const double wall=secondsSince(start);
+                NSString *timingKey=run==0?@"firstTiming":(run==1?@"warmTiming":@"profileTiming");
+                row[timingKey]=@{@"inputCopySeconds":@(inputTotal),@"runSessionSeconds":@(runTotal),
+                    @"readSyncSeconds":@(readTotal),@"twoStepWallSeconds":@(wall),@"includesCallbacks":@(profiled)};
                 std::vector<float> mel(80*(effective-kPromptFrames));
                 for(int c=0;c<80;++c)std::copy(x.begin()+c*n+kPromptFrames,x.begin()+c*n+effective,mel.begin()+c*(effective-kPromptFrames));
-                if(run==0)row[@"firstTwoStepsSeconds"]=@(wall);
-                if(run==1){reference=mel;row[@"warmOrdinaryTwoStepsSeconds"]=@(wall);}
+                NSData *melBytes=[NSData dataWithBytes:mel.data() length:mel.size()*sizeof(float)];
+                if(run==0){first=mel;row[@"firstTwoStepsSeconds"]=@(wall);row[@"firstMelSHA256"]=dataSHA256(melBytes);}
+                if(run==1){
+                    reference=mel;row[@"warmOrdinaryTwoStepsSeconds"]=@(wall);row[@"warmMelSHA256"]=dataSHA256(melBytes);
+                    const auto repeat=CosyVoiceProbe::compare(first,mel);
+                    row[@"repeatMelL2"]=repeat.valid?@(repeat.relativeL2):NSNull.null;
+                    if(!repeat.valid||repeat.relativeL2>1e-5){failure=@"普通首次/预热运行不一致，停止热点诊断";return false;}
+                }
                 if(profiled) {
                     const auto comparison=CosyVoiceProbe::compare(reference,mel);
                     row[@"profiledTwoStepsSeconds"]=@(wall);row[@"profileVsOrdinaryMelL2"]=comparison.valid?@(comparison.relativeL2):NSNull.null;
                     row[@"callbackObservedSeconds"]=@(stats.seconds);row[@"callbackCalls"]=@(stats.calls);
                     row[@"profileOverheadRatio"]=@(wall/[row[@"warmOrdinaryTwoStepsSeconds"] doubleValue]);
+                    row[@"profileMelSHA256"]=dataSHA256(melBytes);
                     auto serialize=[&](bool byType)->NSArray* {
                         NSMutableArray *items=[NSMutableArray array];
                         for(const auto& op:stats.ranked(byType,byType?20:30))
@@ -146,11 +173,19 @@ if([route isEqual:@"flow-w8-profile"]||[route isEqual:@"flow-w8-metal-high"]) {
                         return items;
                     };
                     row[@"topTypes"]=serialize(true);row[@"topOperators"]=serialize(false);
+                    NSMutableArray *categories=[NSMutableArray array];
+                    for(const auto& group:stats.categories())
+                        [categories addObject:@{@"category":[NSString stringWithUTF8String:group.type.c_str()],
+                            @"calls":@(group.calls),@"seconds":@(group.seconds),
+                            @"fractionOfObservedOpTime":@(stats.seconds>0?group.seconds/stats.seconds:0)}];
+                    row[@"operatorCategories"]=categories;
+                    row[@"kernelDispatchVerified"]=@NO;
+                    row[@"categoryScope"]=@"callback operator types only; convolution may contain quantization/packing/GEMM; not a kernel-level split";
                     if(!stats.valid||!comparison.valid||comparison.relativeL2>1e-5){failure=@"回调与普通运行Mel偏差超限，需复核";return false;}
                 }
             }
             row[@"thermalEnd"]=@(NSProcessInfo.processInfo.thermalState);row[@"status"]=@"profile-completed";
-            if([entry[@"id"] isEqual:@"zh-question"]) {
+            if(!current&&[entry[@"id"] isEqual:@"zh-question"]) {
                 NSData *mel=[NSData dataWithBytes:reference.data() length:reference.size()*sizeof(float)];
                 NSDictionary *cache=@{@"success":@YES,@"caseID":entry[@"id"],@"identity":identity,@"melSHA256":dataSHA256(mel),
                     @"version":[NSBundle.mainBundle objectForInfoDictionaryKey:@"CFBundleShortVersionString"],
@@ -164,5 +199,5 @@ if([route isEqual:@"flow-w8-profile"]||[route isEqual:@"flow-w8-metal-high"]) {
         }
         return true;
     }();
-    return finish(ok,ok?@"五条CPU Flow热点分析完成；回调耗时非生产基准、非整链RTF；只需分享统一报告":(failure?:@"热点分析提前停止"));
+    return finish(ok,ok?@"五条CPU Flow热点分析完成；首次/预热/回调分开，Scale/布局/矩阵乘按类型统计；非内核级或整链RTF，只需统一报告":(failure?:@"热点分析提前停止"));
 }

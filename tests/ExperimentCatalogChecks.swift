@@ -12,7 +12,7 @@ struct ExperimentCatalogChecks {
             "three-sentence-staged-w8-head-full", "three-sentence-staged-w8-head-reduced", "flow-w8-profile", "flow-w8-metal-high", "three-sentence-staged", "three-sentence-staged-w8", "flow-projection-reference", "flow-projection-candidate", "three-sentence-staged-w8-head-reduced-reuse", "three-sentence-staged-projection-head-reuse"]
         precondition(Set(ExperimentCatalog.archived.map(\.id)) == concluded)
         precondition(ExperimentCatalog.available.filter { $0.execution == .sentence }.map(\.id) == ["three-sentence-staged-projection-head-reuse-hift-reuse", "three-sentence-staged-awq-head-reuse-hift-reuse"])
-        precondition(ExperimentCatalog.available.filter { $0.execution == .module }.isEmpty)
+        precondition(ExperimentCatalog.available.filter { $0.execution == .module }.map(\.id) == ["flow-projection-profile", "flow-awq-profile"])
         precondition(ExperimentCatalog.planned.isEmpty)
         precondition(ExperimentCatalog.defaultThreads == 4)
         precondition(routes.allSatisfy { !$0.conclusion.isEmpty })

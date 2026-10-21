@@ -26,7 +26,7 @@ final class ExperimentRunner: ObservableObject {
                 status = "\(index + 1)/\(routes.count)：\(title)；请保持前台。当前路线返回后才可停止。"
                 record(status)
                 let runID = DiagnosticReport.begin(kind: "module-experiment", label: title,
-                    parameters: ["route": route, "wholeChainRTFMeasured": false, "diagnosticOnly": route == "flow-metal-nan" || route == "flow-w8-profile"],
+                    parameters: ["route": route, "wholeChainRTFMeasured": false, "diagnosticOnly": route == "flow-metal-nan" || route.hasSuffix("-profile")],
                     sources: ["last-experiment-\(route).json", "last-experiment-\(route).log"])
                 let result: [String: Any] = await withCheckedContinuation { continuation in
                     worker.async { continuation.resume(returning: CosyVoiceGenerate.runExperiment(route, atDirectory: directory)) }
